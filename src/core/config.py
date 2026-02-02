@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     headless: bool = False
     browser_timeout: int = 30000  # milliseconds
 
+    # Email settings (for invoice download)
+    invoice_days_default: int = 30  # Default number of days to look back
+
     # Paths derived from data_dir
     @property
     def extratos_dir(self) -> Path:
