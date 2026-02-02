@@ -41,6 +41,7 @@ ENV/
 data/extratos/*
 data/faturas/*
 data/*.sqlite
+data/*.db
 !data/extratos/.gitkeep
 !data/faturas/.gitkeep
 
