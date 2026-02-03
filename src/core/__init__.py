@@ -1,5 +1,15 @@
 """Core utilities and shared functionality."""
 
+from .classification_rules import (
+    ClassificationRule,
+    ClassificationRulesEngine,
+    MatchSource,
+    MatchType,
+    RuleAction,
+    RuleCondition,
+    RuleMatch,
+    get_rules_engine,
+)
 from .config import settings
 from .credentials import CredentialManager
 from .document_registry import (
@@ -31,4 +41,12 @@ __all__ = [
     "Entity",
     "EntityType",
     "get_document_registry",
+    "ClassificationRulesEngine",
+    "ClassificationRule",
+    "RuleCondition",
+    "RuleMatch",
+    "RuleAction",
+    "MatchSource",
+    "MatchType",
+    "get_rules_engine",
 ]
