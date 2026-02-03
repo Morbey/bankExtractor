@@ -262,18 +262,21 @@ class InvoiceDownloader:
                 provider_class = EMAIL_PROVIDERS[provider_id]
                 filter_to_use = email_filter or EmailFilter(senders=COMMON_INVOICE_SENDERS)
 
-                with provider_class(account=account) as provider:
-                    # Connect
-                    if progress_callback:
-                        progress_callback("connect", 0, 1, "A ligar ao servidor...")
+                # Don't use context manager - manually control connect/disconnect
+                # to allow proper progress feedback
+                provider = provider_class(account=account)
 
-                    if not provider.connect():
-                        self.logger.error("Falha na ligação ao servidor de email.")
-                        return
+                if progress_callback:
+                    progress_callback("connect", 0, 1, "A ligar ao servidor...")
 
-                    if progress_callback:
-                        progress_callback("connect", 1, 1, "Ligado com sucesso")
+                if not provider.connect():
+                    self.logger.error("Falha na ligação ao servidor de email.")
+                    return
 
+                if progress_callback:
+                    progress_callback("connect", 1, 1, "Ligado com sucesso")
+
+                try:
                     # Search emails
                     messages = provider.search_emails(filter_to_use, progress_callback)
                     self.logger.info(f"Encontrados {len(messages)} emails com faturas.")
@@ -294,6 +297,8 @@ class InvoiceDownloader:
                             invoice_queue.put(invoice)
 
                     self.logger.info("Download concluído.")
+                finally:
+                    provider.disconnect()
 
             except Exception as e:
                 self.logger.error(f"Erro no download: {e}")
@@ -337,32 +342,35 @@ class InvoiceDownloader:
 
                     provider_class = EMAIL_PROVIDERS[provider_id]
 
+                    # Don't use context manager - manually control connect/disconnect
+                    provider = provider_class(account=account)
+
                     try:
-                        with provider_class(account=account) as provider:
+                        if progress_callback:
+                            progress_callback("connect", 0, 1, f"A ligar a {provider_id}...")
+
+                        if not provider.connect():
+                            self.logger.error(f"Falha na ligação a {provider_id}.")
+                            continue
+
+                        if progress_callback:
+                            progress_callback("connect", 1, 1, f"Ligado a {provider_id}")
+
+                        messages = provider.search_emails(filter_to_use, progress_callback)
+
+                        for i, msg in enumerate(messages):
                             if progress_callback:
-                                progress_callback("connect", 0, 1, f"A ligar a {provider_id}...")
+                                subject = msg.get("Subject", "")[:40]
+                                progress_callback("download", i + 1, len(messages), f"{provider_id}: {subject}...")
 
-                            if not provider.connect():
-                                self.logger.error(f"Falha na ligação a {provider_id}.")
-                                continue
-
-                            if progress_callback:
-                                progress_callback("connect", 1, 1, f"Ligado a {provider_id}")
-
-                            messages = provider.search_emails(filter_to_use, progress_callback)
-
-                            for i, msg in enumerate(messages):
-                                if progress_callback:
-                                    subject = msg.get("Subject", "")[:40]
-                                    progress_callback("download", i + 1, len(messages), f"{provider_id}: {subject}...")
-
-                                invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
-                                for invoice in invoices:
-                                    invoice_queue.put(invoice)
+                            invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
+                            for invoice in invoices:
+                                invoice_queue.put(invoice)
 
                     except Exception as e:
                         self.logger.error(f"Erro em {provider_id}: {e}")
-                        continue
+                    finally:
+                        provider.disconnect()
 
             finally:
                 invoice_queue.put(_DOWNLOAD_COMPLETE)
