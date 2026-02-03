@@ -1,6 +1,7 @@
 """Gmail email provider for invoice downloads."""
 
 import email
+import hashlib
 import imaplib
 from datetime import datetime
 from email.header import decode_header
@@ -143,6 +144,26 @@ class GmailProvider(EmailProviderBase):
             except Exception:
                 pass
         return datetime.now()
+
+    def _get_message_id(self, msg: Message) -> str:
+        """Extract or generate a unique message ID for deduplication.
+
+        Args:
+            msg: Email message
+
+        Returns:
+            Message-ID header value or generated hash
+        """
+        message_id = msg.get("Message-ID", "")
+        if message_id:
+            return message_id.strip()
+
+        # Fallback: create hash from sender+subject+date
+        sender = self._decode_header_value(msg.get("From", ""))
+        subject = self._decode_header_value(msg.get("Subject", ""))
+        date_str = msg.get("Date", "")
+        fallback_str = f"{sender}|{subject}|{date_str}"
+        return hashlib.sha256(fallback_str.encode()).hexdigest()
 
     def search_emails(
         self,
@@ -332,6 +353,7 @@ class GmailProvider(EmailProviderBase):
         subject = self._decode_header_value(message.get("Subject", ""))
         email_date = self._get_email_date(message)
         email_body = self._extract_email_body(message)
+        message_id = self._get_message_id(message)
 
         for part in message.walk():
             content_disposition = part.get("Content-Disposition", "")
@@ -365,17 +387,40 @@ class GmailProvider(EmailProviderBase):
                     self.logger.warning(f"Nome de ficheiro inválido ignorado: {filename[:50]}...")
                     continue
 
+                # Compute hash of attachment content for deduplication
+                content_hash = hashlib.sha256(data).hexdigest()
+
                 # Save file to temp folder (pending organization)
                 file_path = settings.faturas_temp_dir / final_filename
 
-                # Handle duplicates
+                # Check if file with same content already exists
+                if file_path.exists():
+                    existing_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    if existing_hash == content_hash:
+                        # Same content, skip this duplicate
+                        self.logger.debug(f"Anexo duplicado ignorado: {filename}")
+                        continue
+
+                # Handle name collisions (different content but same name)
                 counter = 1
                 base_path = file_path
                 while file_path.exists():
+                    # Check if existing file has same content
+                    existing_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                    if existing_hash == content_hash:
+                        # Same content, skip this duplicate
+                        self.logger.debug(f"Anexo duplicado ignorado: {filename}")
+                        file_path = None  # Signal to skip
+                        break
+                    # Different content, try next filename
                     stem = base_path.stem
                     suffix = base_path.suffix
                     file_path = base_path.parent / f"{stem}_{counter}{suffix}"
                     counter += 1
+
+                # Skip if we found a duplicate
+                if file_path is None:
+                    continue
 
                 file_path.write_bytes(data)
                 self.logger.info(f"Guardada fatura: {file_path.name}")
@@ -390,6 +435,7 @@ class GmailProvider(EmailProviderBase):
                         file_name=filename,
                         file_size=len(data),
                         email_body=email_body,
+                        message_id=message_id,
                     )
                 )
 

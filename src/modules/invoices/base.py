@@ -26,6 +26,7 @@ class DownloadedInvoice:
     file_name: str
     file_size: int
     email_body: Optional[str] = None  # Plain text body of the email
+    message_id: Optional[str] = None  # Message-ID header for deduplication
 
 
 @dataclass

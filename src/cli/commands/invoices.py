@@ -508,8 +508,12 @@ def faturas(
     if paralelo and organizar:
         console.print(f"[cyan]Modo: Paralelo (processar enquanto descarrega)[/cyan]")
 
-    # Create downloader
+    # Create downloader and inbox database
+    from src.modules.invoices.inbox_db import InboxDatabase
+    from src.modules.invoices.base import DownloadedInvoice
+
     downloader = InvoiceDownloader()
+    inbox_db = InboxDatabase()
     email_filter = EmailFilter(start_date=start_date, end_date=end_date)
 
     # Parallel mode: process invoices as they arrive
@@ -517,8 +521,11 @@ def faturas(
         _process_invoices_streaming(downloader, providers_to_process, email_filter, conta, mover)
         return
 
-    # Standard mode: download all, then process
-    all_invoices = []
+    # Standard mode: use inbox database for deduplication
+    total_emails_added = 0
+    total_emails_skipped = 0
+    total_attachments_added = 0
+    total_attachments_skipped = 0
 
     for prov_id in providers_to_process:
         display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
@@ -533,15 +540,11 @@ def faturas(
             console=console,
             transient=True,
         ) as progress:
-            # Create tasks for different stages
-            # Start with indeterminate progress (no bar shown for connect phase)
             current_task = progress.add_task("[cyan]A ligar...", total=None)
 
             def update_progress(stage: str, current: int, total: int, message: str):
                 """Callback to update progress display."""
                 if stage == "connect":
-                    # For connect stage, don't show percentage - just update text
-                    # When current=1, connection is done, keep total=None to hide bar
                     if current >= 1:
                         progress.update(current_task, description=f"[green]✓ Ligado[/green]", total=None)
                     else:
@@ -554,68 +557,142 @@ def faturas(
                     progress.update(current_task, description=f"[green]{message}", total=total, completed=current)
 
             try:
-                invoices = downloader.download_from(
+                # Use scrape_to_inbox for automatic deduplication
+                ea, es, aa, as_ = downloader.scrape_to_inbox(
                     prov_id,
                     email_filter,
                     account=conta,
                     progress_callback=update_progress,
                 )
-                all_invoices.extend(invoices)
 
-                if invoices:
-                    console.print(f"  [green]✓ {len(invoices)} faturas encontradas[/green]")
+                total_emails_added += ea
+                total_emails_skipped += es
+                total_attachments_added += aa
+                total_attachments_skipped += as_
+
+                if aa > 0:
+                    console.print(f"  [green]✓ {aa} faturas novas[/green]")
+                    if as_ > 0:
+                        console.print(f"  [dim]{as_} duplicadas ignoradas[/dim]")
+                elif es > 0:
+                    console.print(f"  [dim]Todos os {es} emails já existiam na BD[/dim]")
                 else:
                     console.print(f"  [dim]Nenhuma fatura encontrada[/dim]")
 
             except Exception as e:
                 console.print(f"[red]Erro: {e}[/red]")
 
-    if not all_invoices:
-        console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
+    if total_attachments_added == 0:
+        if total_attachments_skipped > 0 or total_emails_skipped > 0:
+            console.print(f"\n[yellow]Nenhuma fatura nova. {total_attachments_skipped + total_emails_skipped} já existiam na BD.[/yellow]")
+        else:
+            console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
         return
 
     # Show download summary
-    console.print(f"\n[green]Descarregadas {len(all_invoices)} faturas para pasta temporária[/green]")
-    console.print(f"[dim]Localização: {settings.faturas_temp_dir}[/dim]")
+    console.print(f"\n[green]Adicionadas {total_attachments_added} faturas novas à BD inbox[/green]")
+    if total_attachments_skipped > 0:
+        console.print(f"[dim]{total_attachments_skipped} duplicadas ignoradas[/dim]")
 
-    # Process and organize invoices
+    # Process and organize invoices from inbox database
     if organizar:
         console.print(f"\n[bold cyan]A organizar faturas...[/bold cyan]")
         console.print("[dim]Para cada fatura desconhecida, será mostrada informação para identificação.[/dim]")
         console.print("[dim]Ficheiros organizados serão movidos da pasta temporária para a pasta final.[/dim]\n")
 
-        processor = InvoiceProcessor()
-        processor.process_invoices(all_invoices, interactive=True, move=mover)
+        # Get pending attachments from inbox and convert to DownloadedInvoice
+        pending_attachments = inbox_db.get_pending_attachments(limit=total_attachments_added + 10)
 
-        # Show remaining pending files
-        _show_pending_temp_files()
-    else:
-        # Just show what was downloaded
-        table = Table(title="Faturas Descarregadas (Pasta Temporária)")
-        table.add_column("Provider", style="cyan")
-        table.add_column("Remetente", style="green", max_width=30)
-        table.add_column("Data", style="yellow")
-        table.add_column("Ficheiro", style="white")
-        table.add_column("Tamanho", style="magenta", justify="right")
+        all_invoices = []
+        attachment_map = {}  # Map invoice index to attachment for status updates
 
-        for inv in all_invoices:
-            size_kb = inv.file_size / 1024
-            table.add_row(
-                inv.provider,
-                inv.sender[:30] + "..." if len(inv.sender) > 30 else inv.sender,
-                inv.date.strftime("%d-%m-%Y"),
-                inv.file_path.name,
-                f"{size_kb:.1f} KB",
+        for att in pending_attachments:
+            if not Path(att.file_path).exists():
+                inbox_db.mark_deleted(att.id, reason="file_not_found", reason_label="Ficheiro não encontrado")
+                continue
+
+            invoice = DownloadedInvoice(
+                provider=att.email.provider,
+                sender=att.email.sender,
+                subject=att.email.subject,
+                date=att.email.email_date,
+                file_path=Path(att.file_path),
+                file_name=att.file_name,
+                file_size=att.file_size,
+                email_body=att.email.body,
+                message_id=att.email.message_id,
             )
+            attachment_map[len(all_invoices)] = att
+            all_invoices.append(invoice)
 
-        console.print(table)
-        console.print(f"\n[yellow]⚠ Ficheiros na pasta temporária: {settings.faturas_temp_dir}[/yellow]")
-        console.print("[dim]Execute novamente com --organizar para categorizar e mover para pastas finais[/dim]")
-        console.print("[dim]Ou use: bank-extractor gerir-faturas organizar[/dim]")
+        if not all_invoices:
+            console.print("[yellow]Nenhum ficheiro válido para processar.[/yellow]")
+            return
+
+        processor = InvoiceProcessor()
+
+        # Process with callback to update inbox database
+        results = []
+        processor.reset_session_stats()
+
+        for i, invoice in enumerate(all_invoices):
+            att = attachment_map[i]
+
+            result, rule_condition, action = processor.process_invoice(
+                invoice,
+                interactive=True,
+                move=mover,
+            )
+            results.append(result)
+
+            # Update inbox database based on result
+            if result.success and result.destination_path:
+                inbox_db.mark_processed(
+                    att.id,
+                    destination_path=str(result.destination_path),
+                    entity_name=result.entity_name,
+                )
+            elif action == "delete":
+                inbox_db.mark_deleted(att.id, reason="manual", reason_label="Eliminado pelo utilizador")
+            elif action == "ignore" or (not result.success and "Ignorado" in (result.error or "")):
+                inbox_db.mark_ignored(att.id, reason="manual", reason_label="Ignorado pelo utilizador")
+
+        processor.show_session_summary()
+
+        # Show remaining pending in inbox
+        _show_pending_inbox_files(inbox_db)
+    else:
+        # Just show what was downloaded (from inbox database)
+        pending_attachments = inbox_db.get_pending_attachments(limit=100)
+
+        if pending_attachments:
+            table = Table(title="Faturas Pendentes (BD Inbox)")
+            table.add_column("ID", style="dim", width=5)
+            table.add_column("Provider", style="cyan")
+            table.add_column("Remetente", style="green", max_width=30)
+            table.add_column("Data", style="yellow")
+            table.add_column("Ficheiro", style="white")
+            table.add_column("Tamanho", style="magenta", justify="right")
+
+            for att in pending_attachments:
+                size_kb = att.file_size / 1024
+                table.add_row(
+                    str(att.id),
+                    att.email.provider,
+                    att.email.sender[:28] + ".." if len(att.email.sender) > 30 else att.email.sender,
+                    att.email.email_date.strftime("%d-%m-%Y"),
+                    att.file_name[:30] + ".." if len(att.file_name) > 32 else att.file_name,
+                    f"{size_kb:.1f} KB",
+                )
+
+            console.print(table)
+
+        console.print(f"\n[cyan]Use 'bank-extractor faturas-processar-inbox' para processar as faturas[/cyan]")
+        console.print("[dim]Ou execute novamente com --organizar para processar agora[/dim]")
 
 
 def _show_pending_temp_files() -> None:
-    """Show any remaining files in the temp folder."""
+    """Show any remaining files in the temp folder (legacy)."""
     temp_files = list(settings.faturas_temp_dir.glob("*.pdf"))
 
     if temp_files:
@@ -625,7 +702,18 @@ def _show_pending_temp_files() -> None:
         if len(temp_files) > 5:
             console.print(f"  [dim]... e mais {len(temp_files) - 5} ficheiro(s)[/dim]")
         console.print(f"[dim]Pasta: {settings.faturas_temp_dir}[/dim]")
-        console.print("[dim]Use 'bank-extractor pendentes' para processar ficheiros pendentes[/dim]")
+        console.print("[dim]Use 'bank-extractor faturas-processar-inbox' para processar[/dim]")
+
+
+def _show_pending_inbox_files(inbox_db) -> None:
+    """Show pending files from inbox database."""
+    stats = inbox_db.get_status_counts()
+    pending_count = stats.get("pending", 0)
+
+    if pending_count > 0:
+        console.print(f"\n[cyan]Inbox: {pending_count} ficheiro(s) pendente(s)[/cyan]")
+        console.print("[dim]Use 'bank-extractor faturas-processar-inbox' para processar[/dim]")
+        console.print("[dim]Use 'bank-extractor faturas-inbox --stats' para ver estatísticas[/dim]")
 
 
 def _process_invoices_streaming(
@@ -1014,3 +1102,574 @@ def faturas_limpar(
     CredentialManager.delete_credential(credential_key, "email")
     CredentialManager.delete_credential(credential_key, "password")
     console.print(f"[green]Credenciais de {display_name} removidas.[/green]")
+
+
+# ==================== Inbox System Commands ====================
+
+
+def faturas_scrape(
+    provider: str = typer.Argument(
+        "todos",
+        help="Provider de email: gmail, hotmail, ou 'todos'",
+    ),
+    dias: int = typer.Option(
+        settings.invoice_days_default,
+        "--dias", "-d",
+        help="Número de dias a pesquisar (padrão: 30)",
+    ),
+    inicio: Optional[str] = typer.Option(
+        None,
+        "--inicio", "-i",
+        help="Data início (DD-MM-YYYY). Sobrepõe --dias.",
+    ),
+    fim: Optional[str] = typer.Option(
+        None,
+        "--fim", "-f",
+        help="Data fim (DD-MM-YYYY). Default: hoje.",
+    ),
+    conta: Optional[str] = typer.Option(
+        None,
+        "--conta",
+        help="Nome da conta (ex: pessoal, empresa).",
+    ),
+):
+    """Descarregar emails para inbox (sem processar).
+
+    Este comando descarrega emails e anexos para a base de dados inbox
+    para serem processados mais tarde. Faz deduplicação automática.
+
+    Exemplos:
+        bank-extractor faturas scrape gmail --dias 30
+        bank-extractor faturas scrape todos --dias 60 --conta pessoal
+    """
+    from src import __version__
+
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Scrape de faturas para inbox",
+        border_style="blue",
+    ))
+
+    # Validate provider
+    if provider.lower() == "todos":
+        providers_to_process = list(EMAIL_PROVIDERS.keys())
+    elif provider.lower() in EMAIL_PROVIDERS:
+        providers_to_process = [provider.lower()]
+    else:
+        console.print(f"[red]Provider desconhecido: {provider}[/red]")
+        console.print(f"Providers disponíveis: {', '.join(EMAIL_PROVIDERS.keys())}, todos")
+        raise typer.Exit(1)
+
+    # Parse dates
+    if inicio:
+        start_date = parse_date(inicio)
+    else:
+        start_date = date.today() - timedelta(days=dias)
+
+    end_date = parse_date(fim) if fim else date.today()
+
+    console.print(f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]")
+    if conta:
+        console.print(f"[cyan]Conta: {conta}[/cyan]")
+
+    # Create downloader
+    downloader = InvoiceDownloader()
+    email_filter = EmailFilter(start_date=start_date, end_date=end_date)
+
+    total_emails_added = 0
+    total_emails_skipped = 0
+    total_attachments_added = 0
+    total_attachments_skipped = 0
+
+    for prov_id in providers_to_process:
+        display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
+        console.print(f"\n[bold cyan]A fazer scrape de {display_name}...[/bold cyan]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=20),
+            TaskProgressColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            current_task = progress.add_task("[cyan]A ligar...", total=None)
+
+            def update_progress(stage: str, current: int, total: int, message: str):
+                if stage == "connect":
+                    if current >= 1:
+                        progress.update(current_task, description="[green]✓ Ligado[/green]", total=None)
+                    else:
+                        progress.update(current_task, description=f"[cyan]{message}", total=None)
+                elif stage == "search":
+                    progress.update(current_task, description=f"[yellow]{message}", total=total, completed=current)
+                elif stage == "fetch":
+                    progress.update(current_task, description=f"[blue]{message}", total=total, completed=current)
+                elif stage == "download":
+                    progress.update(current_task, description=f"[green]{message}", total=total, completed=current)
+
+            try:
+                ea, es, aa, as_ = downloader.scrape_to_inbox(
+                    prov_id,
+                    email_filter,
+                    account=conta,
+                    progress_callback=update_progress,
+                )
+
+                total_emails_added += ea
+                total_emails_skipped += es
+                total_attachments_added += aa
+                total_attachments_skipped += as_
+
+                console.print(f"  [green]✓ {ea} emails novos, {aa} anexos novos[/green]")
+                if es > 0 or as_ > 0:
+                    console.print(f"  [dim]{es} emails já existiam, {as_} anexos duplicados[/dim]")
+
+            except Exception as e:
+                console.print(f"[red]Erro: {e}[/red]")
+
+    # Summary
+    console.print(f"\n[bold]━━━ Resumo do Scrape ━━━[/bold]")
+    console.print(f"  Emails novos: [green]{total_emails_added}[/green]")
+    console.print(f"  Emails existentes: [dim]{total_emails_skipped}[/dim]")
+    console.print(f"  Anexos novos: [green]{total_attachments_added}[/green]")
+    console.print(f"  Anexos duplicados: [dim]{total_attachments_skipped}[/dim]")
+
+    if total_attachments_added > 0:
+        console.print(f"\n[cyan]Use 'bank-extractor faturas processar-inbox' para processar os anexos[/cyan]")
+
+
+def faturas_inbox(
+    stats: bool = typer.Option(
+        False,
+        "--stats", "-s",
+        help="Mostrar estatísticas do inbox",
+    ),
+    listar: bool = typer.Option(
+        False,
+        "--listar", "-l",
+        help="Listar anexos pendentes",
+    ),
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        help="Filtrar por status: pending, processed, ignored, deleted",
+    ),
+    remetente: Optional[str] = typer.Option(
+        None,
+        "--remetente", "-r",
+        help="Filtrar por remetente (parcial)",
+    ),
+    limite: int = typer.Option(
+        50,
+        "--limite",
+        help="Limite de resultados a mostrar",
+    ),
+    migrar: bool = typer.Option(
+        False,
+        "--migrar",
+        help="Migrar dados existentes para a base de dados inbox",
+    ),
+):
+    """Gerir o inbox de faturas.
+
+    Mostra estatísticas, lista anexos, ou migra dados existentes.
+
+    Exemplos:
+        bank-extractor faturas inbox --stats
+        bank-extractor faturas inbox --listar
+        bank-extractor faturas inbox --status ignored
+        bank-extractor faturas inbox --migrar
+    """
+    from src import __version__
+    from src.modules.invoices.inbox_db import InboxDatabase
+    from src.modules.invoices.inbox_models import AttachmentStatus
+
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Gestão do Inbox",
+        border_style="blue",
+    ))
+
+    inbox_db = InboxDatabase()
+
+    # Handle migration
+    if migrar:
+        _migrate_to_inbox(inbox_db)
+        return
+
+    # Default to stats if no option specified
+    if not stats and not listar and not status and not remetente:
+        stats = True
+
+    # Show statistics
+    if stats:
+        inbox_stats = inbox_db.get_statistics()
+
+        console.print(f"\n[bold cyan]Estatísticas do Inbox[/bold cyan]\n")
+
+        # General stats table
+        general_table = Table(title="Resumo Geral")
+        general_table.add_column("Métrica", style="cyan")
+        general_table.add_column("Valor", style="green", justify="right")
+
+        general_table.add_row("Total de emails", str(inbox_stats["total_emails"]))
+        general_table.add_row("Total de anexos", str(inbox_stats["total_attachments"]))
+        general_table.add_row("Tamanho total", f"{inbox_stats['total_size_mb']:.2f} MB")
+
+        console.print(general_table)
+
+        # Status breakdown
+        console.print()
+        status_table = Table(title="Por Status")
+        status_table.add_column("Status", style="cyan")
+        status_table.add_column("Quantidade", style="green", justify="right")
+
+        for status_name, count in inbox_stats["by_status"].items():
+            status_style = {
+                "pending": "yellow",
+                "processed": "green",
+                "ignored": "dim",
+                "deleted": "red",
+            }.get(status_name, "white")
+            status_table.add_row(f"[{status_style}]{status_name}[/{status_style}]", str(count))
+
+        console.print(status_table)
+
+        # Provider breakdown
+        if inbox_stats["by_provider"]:
+            console.print()
+            prov_table = Table(title="Por Provider")
+            prov_table.add_column("Provider", style="cyan")
+            prov_table.add_column("Emails", style="green", justify="right")
+
+            for prov, count in inbox_stats["by_provider"].items():
+                prov_table.add_row(prov.upper(), str(count))
+
+            console.print(prov_table)
+
+        return
+
+    # List attachments by status or search
+    attachments = []
+
+    if status:
+        try:
+            status_enum = AttachmentStatus(status.lower())
+            attachments = inbox_db.get_attachments_by_status(status_enum, limit=limite)
+        except ValueError:
+            console.print(f"[red]Status inválido: {status}[/red]")
+            console.print("Status válidos: pending, processed, ignored, deleted")
+            raise typer.Exit(1)
+    elif remetente:
+        attachments = inbox_db.search_by_sender(remetente, limit=limite)
+    elif listar:
+        attachments = inbox_db.get_pending_attachments(limit=limite)
+
+    if not attachments:
+        console.print("[yellow]Nenhum anexo encontrado.[/yellow]")
+        return
+
+    # Display attachments
+    table = Table(title=f"Anexos ({len(attachments)} resultados)")
+    table.add_column("ID", style="dim", width=5)
+    table.add_column("Remetente", style="cyan", max_width=30)
+    table.add_column("Ficheiro", style="white", max_width=35)
+    table.add_column("Data", style="yellow", width=10)
+    table.add_column("Status", style="green", width=10)
+    table.add_column("Tamanho", style="magenta", justify="right", width=8)
+
+    for att in attachments:
+        status_style = {
+            "pending": "yellow",
+            "processed": "green",
+            "ignored": "dim",
+            "deleted": "red",
+        }.get(att.status, "white")
+
+        sender_display = att.email.sender[:28] + ".." if len(att.email.sender) > 30 else att.email.sender
+        file_display = att.file_name[:33] + ".." if len(att.file_name) > 35 else att.file_name
+        size_kb = att.file_size / 1024
+
+        table.add_row(
+            str(att.id),
+            sender_display,
+            file_display,
+            att.email.email_date.strftime("%d-%m-%Y"),
+            f"[{status_style}]{att.status}[/{status_style}]",
+            f"{size_kb:.1f} KB",
+        )
+
+    console.print(table)
+
+
+def _migrate_to_inbox(inbox_db) -> None:
+    """Migrate existing data to inbox database."""
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    console.print("\n[bold cyan]Migração de dados para inbox[/bold cyan]\n")
+
+    migrated_files = 0
+    migrated_pending = 0
+
+    # 1. Migrate files in _pendentes folder
+    console.print("[dim]1. A verificar ficheiros em _pendentes/...[/dim]")
+
+    pending_dir = settings.faturas_temp_dir
+    if pending_dir.exists():
+        pdf_files = list(pending_dir.glob("*.pdf"))
+
+        for pdf_file in pdf_files:
+            try:
+                # Compute hash
+                file_hash = inbox_db.compute_file_hash(pdf_file)
+
+                # Check if already exists
+                if inbox_db.attachment_exists_by_hash(file_hash):
+                    console.print(f"  [dim]Já existe: {pdf_file.name}[/dim]")
+                    continue
+
+                # Create "manual import" email record
+                email_id = inbox_db.add_email(
+                    provider="manual_import",
+                    message_id=f"manual_{file_hash[:32]}",
+                    sender="manual_import@local",
+                    subject=f"Importação manual: {pdf_file.name}",
+                    email_date=datetime.fromtimestamp(pdf_file.stat().st_mtime),
+                    body=None,
+                )
+
+                # Add attachment
+                inbox_db.add_attachment(
+                    email_id=email_id,
+                    file_name=pdf_file.name,
+                    file_path=str(pdf_file),
+                    file_size=pdf_file.stat().st_size,
+                    content_hash=file_hash,
+                )
+
+                migrated_files += 1
+                console.print(f"  [green]✓ Migrado: {pdf_file.name}[/green]")
+
+            except Exception as e:
+                console.print(f"  [red]Erro em {pdf_file.name}: {e}[/red]")
+
+    console.print(f"  [dim]Total: {migrated_files} ficheiros migrados[/dim]")
+
+    # 2. Migrate pending_documents.json
+    console.print("\n[dim]2. A verificar pending_documents.json...[/dim]")
+
+    pending_json = settings.data_dir / "pending_documents.json"
+    if pending_json.exists():
+        try:
+            with open(pending_json, "r", encoding="utf-8") as f:
+                pending_docs = json.load(f)
+
+            for doc in pending_docs:
+                try:
+                    file_path = Path(doc.get("file_path", ""))
+
+                    if not file_path.exists():
+                        console.print(f"  [dim]Ficheiro não existe: {file_path.name}[/dim]")
+                        continue
+
+                    # Compute hash
+                    file_hash = inbox_db.compute_file_hash(file_path)
+
+                    # Check if already exists
+                    if inbox_db.attachment_exists_by_hash(file_hash):
+                        console.print(f"  [dim]Já existe: {file_path.name}[/dim]")
+                        continue
+
+                    # Parse email date
+                    email_date_str = doc.get("email_date")
+                    if email_date_str:
+                        try:
+                            email_date = datetime.fromisoformat(email_date_str)
+                        except ValueError:
+                            email_date = datetime.now()
+                    else:
+                        email_date = datetime.now()
+
+                    # Create email record
+                    email_id = inbox_db.add_email(
+                        provider="pending_migration",
+                        message_id=f"pending_{file_hash[:32]}",
+                        sender=doc.get("sender", "unknown@local"),
+                        subject=doc.get("subject", file_path.name),
+                        email_date=email_date,
+                        body=None,
+                    )
+
+                    # Add attachment
+                    att_id = inbox_db.add_attachment(
+                        email_id=email_id,
+                        file_name=file_path.name,
+                        file_path=str(file_path),
+                        file_size=file_path.stat().st_size,
+                        content_hash=file_hash,
+                    )
+
+                    # If it was ignored, mark as such
+                    ignore_reason = doc.get("ignore_reason")
+                    if ignore_reason:
+                        inbox_db.mark_ignored(
+                            att_id,
+                            reason=ignore_reason,
+                            reason_label=doc.get("ignore_reason_label"),
+                        )
+
+                    migrated_pending += 1
+                    console.print(f"  [green]✓ Migrado: {file_path.name}[/green]")
+
+                except Exception as e:
+                    console.print(f"  [red]Erro: {e}[/red]")
+
+        except json.JSONDecodeError as e:
+            console.print(f"  [red]Erro ao ler pending_documents.json: {e}[/red]")
+
+    console.print(f"  [dim]Total: {migrated_pending} documentos pendentes migrados[/dim]")
+
+    # Summary
+    console.print(f"\n[bold]━━━ Resumo da Migração ━━━[/bold]")
+    console.print(f"  Ficheiros de _pendentes/: [green]{migrated_files}[/green]")
+    console.print(f"  Documentos de pending_documents.json: [green]{migrated_pending}[/green]")
+
+    if migrated_files > 0 or migrated_pending > 0:
+        console.print(f"\n[cyan]Use 'bank-extractor faturas inbox --stats' para ver o estado actual[/cyan]")
+
+
+def faturas_processar_inbox(
+    limite: int = typer.Option(
+        None,
+        "--limite", "-n",
+        help="Número máximo de anexos a processar",
+    ),
+    remetente: Optional[str] = typer.Option(
+        None,
+        "--remetente", "-r",
+        help="Filtrar por remetente (parcial)",
+    ),
+    interativo: bool = typer.Option(
+        True,
+        "--interativo/--auto",
+        help="Modo interativo (default) ou automático",
+    ),
+    mover: bool = typer.Option(
+        False,
+        "--mover", "-m",
+        help="Mover ficheiros em vez de copiar ao organizar",
+    ),
+):
+    """Processar anexos pendentes do inbox.
+
+    Processa os anexos pendentes na base de dados inbox,
+    permitindo organizar, ignorar ou eliminar cada um.
+
+    Exemplos:
+        bank-extractor faturas processar-inbox
+        bank-extractor faturas processar-inbox --limite 10
+        bank-extractor faturas processar-inbox --remetente vodafone
+    """
+    from src import __version__
+    from src.modules.invoices import InvoiceProcessor
+    from src.modules.invoices.inbox_db import InboxDatabase
+    from src.modules.invoices.inbox_models import AttachmentStatus
+    from src.modules.invoices.base import DownloadedInvoice
+
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Processar anexos do inbox",
+        border_style="blue",
+    ))
+
+    inbox_db = InboxDatabase()
+
+    # Get pending attachments
+    attachments = inbox_db.get_pending_attachments(
+        limit=limite,
+        sender_pattern=remetente,
+    )
+
+    if not attachments:
+        console.print("[yellow]Nenhum anexo pendente encontrado.[/yellow]")
+        return
+
+    console.print(f"\n[cyan]Encontrados {len(attachments)} anexos pendentes[/cyan]")
+    if remetente:
+        console.print(f"[dim]Filtro: remetente contém '{remetente}'[/dim]")
+
+    # Convert attachments to DownloadedInvoice objects for compatibility
+    invoices = []
+    attachment_map = {}  # Map invoice index to attachment
+
+    for att in attachments:
+        # Check if file still exists
+        if not Path(att.file_path).exists():
+            console.print(f"[yellow]Ficheiro não encontrado: {att.file_path}[/yellow]")
+            # Mark as deleted in database
+            inbox_db.mark_deleted(att.id, reason="file_not_found", reason_label="Ficheiro não encontrado")
+            continue
+
+        invoice = DownloadedInvoice(
+            provider=att.email.provider,
+            sender=att.email.sender,
+            subject=att.email.subject,
+            date=att.email.email_date,
+            file_path=Path(att.file_path),
+            file_name=att.file_name,
+            file_size=att.file_size,
+            email_body=att.email.body,
+            message_id=att.email.message_id,
+        )
+        invoices.append(invoice)
+        attachment_map[len(invoices) - 1] = att
+
+    if not invoices:
+        console.print("[yellow]Nenhum ficheiro válido para processar.[/yellow]")
+        return
+
+    # Create processor and process invoices
+    processor = InvoiceProcessor()
+
+    console.print(f"\n[bold]A processar {len(invoices)} faturas...[/bold]\n")
+
+    # Process each invoice and update inbox database
+    for i, invoice in enumerate(invoices):
+        att = attachment_map[i]
+
+        result, rule_condition, action = processor.process_invoice(
+            invoice,
+            interactive=interativo,
+            move=mover,
+        )
+
+        # Update inbox database based on result
+        if result.success and result.destination_path:
+            inbox_db.mark_processed(
+                att.id,
+                destination_path=str(result.destination_path),
+                entity_id=None,  # Could be extracted from result
+                entity_name=result.entity_name,
+            )
+        elif action == "delete":
+            inbox_db.mark_deleted(
+                att.id,
+                reason=rule_condition.pattern if rule_condition else "manual",
+                reason_label="Eliminado pelo utilizador",
+            )
+        elif action == "ignore":
+            inbox_db.mark_ignored(
+                att.id,
+                reason=rule_condition.pattern if rule_condition else "manual",
+                reason_label="Ignorado pelo utilizador",
+            )
+
+    # Show summary
+    processor.show_session_summary()
+
+    # Show updated stats
+    stats = inbox_db.get_status_counts()
+    console.print(f"\n[dim]Inbox: {stats['pending']} pendentes, {stats['processed']} processados[/dim]")

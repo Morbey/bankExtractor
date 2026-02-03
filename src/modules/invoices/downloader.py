@@ -2,6 +2,7 @@
 
 import threading
 from datetime import date
+from pathlib import Path
 from queue import Queue
 from typing import Callable, Iterator, Optional
 
@@ -16,6 +17,8 @@ from .base import (
 )
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
+from .inbox_db import InboxDatabase
+from .inbox_models import AttachmentStatus
 
 
 # Registry of available email providers
@@ -378,3 +381,215 @@ class InvoiceDownloader:
         thread.start()
 
         return invoice_queue, thread
+
+    def scrape_to_inbox(
+        self,
+        provider_id: str,
+        email_filter: Optional[EmailFilter] = None,
+        account: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> tuple[int, int, int, int]:
+        """Scrape emails and store in inbox database (without processing).
+
+        Downloads attachments and stores them in the inbox database for later
+        processing. Performs deduplication by message_id (emails) and
+        content hash (attachments).
+
+        Args:
+            provider_id: Email provider identifier (gmail, hotmail).
+            email_filter: Optional filter criteria. If None, uses default.
+            account: Optional account name (e.g., 'pessoal', 'empresa').
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Tuple of (emails_added, emails_skipped, attachments_added, attachments_skipped).
+        """
+        if provider_id not in EMAIL_PROVIDERS:
+            self.logger.error(f"Provider desconhecido: {provider_id}")
+            return (0, 0, 0, 0)
+
+        provider_class = EMAIL_PROVIDERS[provider_id]
+
+        # Use default filter with common senders if not specified
+        if email_filter is None:
+            email_filter = EmailFilter(senders=COMMON_INVOICE_SENDERS)
+
+        account_display = f"{provider_id} ({account})" if account else provider_id
+        self.logger.info(f"A iniciar scrape para inbox via {account_display}...")
+
+        # Initialize inbox database
+        inbox_db = InboxDatabase()
+
+        emails_added = 0
+        emails_skipped = 0
+        attachments_added = 0
+        attachments_skipped = 0
+
+        with provider_class(account=account) as provider:
+            if progress_callback:
+                progress_callback("connect", 0, 1, "A ligar ao servidor...")
+
+            if not provider.connect():
+                self.logger.error("Falha na ligação ao servidor de email.")
+                return (0, 0, 0, 0)
+
+            if progress_callback:
+                progress_callback("connect", 1, 1, "Ligado com sucesso")
+
+            try:
+                # Search for emails
+                messages = provider.search_emails(email_filter, progress_callback)
+                self.logger.info(f"Encontrados {len(messages)} emails.")
+
+                if progress_callback:
+                    progress_callback(
+                        "download",
+                        0,
+                        len(messages),
+                        f"A processar {len(messages)} emails...",
+                    )
+
+                for i, msg in enumerate(messages):
+                    try:
+                        # Extract message metadata FIRST (before downloading anything)
+                        message_id = provider._get_message_id(msg)
+                        sender = provider._decode_header_value(msg.get("From", ""))
+                        subject = provider._decode_header_value(msg.get("Subject", ""))
+                        email_date = provider._get_email_date(msg)
+
+                        if progress_callback:
+                            progress_callback(
+                                "download",
+                                i + 1,
+                                len(messages),
+                                f"Email {i + 1}/{len(messages)}: {subject[:30]}...",
+                            )
+
+                        # Check if email already exists BEFORE downloading
+                        if inbox_db.email_exists(message_id):
+                            emails_skipped += 1
+                            self.logger.debug(f"Email já existe: {subject[:30]}")
+                            continue
+
+                        # Check if email has valid attachments BEFORE downloading
+                        if email_filter.has_attachment:
+                            if not provider._has_matching_attachment(
+                                msg, email_filter.attachment_extensions
+                            ):
+                                continue
+
+                        # Extract email body (only when we know we'll use it)
+                        email_body = provider._extract_email_body(msg)
+
+                        # Download attachments
+                        invoices = provider.download_attachments(
+                            msg, email_filter.attachment_extensions
+                        )
+
+                        if not invoices:
+                            # No valid attachments, skip this email
+                            continue
+
+                        # Check if any attachment is new (by content hash)
+                        new_invoices = []
+                        for invoice in invoices:
+                            if invoice.file_path.exists():
+                                file_hash = inbox_db.compute_file_hash(invoice.file_path)
+                                if not inbox_db.attachment_exists_by_hash(file_hash):
+                                    new_invoices.append((invoice, file_hash))
+                                else:
+                                    # Attachment already exists (duplicate content), delete the file
+                                    self.logger.debug(
+                                        f"Anexo duplicado (hash): {invoice.file_name}"
+                                    )
+                                    invoice.file_path.unlink()
+                                    attachments_skipped += 1
+
+                        if not new_invoices:
+                            # All attachments already existed (by content)
+                            emails_skipped += 1
+                            continue
+
+                        # Add email to database
+                        email_id = inbox_db.add_email(
+                            provider=provider_id,
+                            message_id=message_id,
+                            sender=sender,
+                            subject=subject,
+                            email_date=email_date,
+                            account=account,
+                            body=email_body,
+                        )
+                        emails_added += 1
+
+                        # Add new attachments
+                        for invoice, file_hash in new_invoices:
+                            inbox_db.add_attachment(
+                                email_id=email_id,
+                                file_name=invoice.file_name,
+                                file_path=str(invoice.file_path),
+                                file_size=invoice.file_size,
+                                content_hash=file_hash,
+                            )
+                            attachments_added += 1
+                            self.logger.debug(f"Adicionado: {invoice.file_name}")
+
+                    except Exception as e:
+                        self.logger.error(f"Erro ao processar email: {e}")
+                        continue
+
+            finally:
+                provider.disconnect()
+
+        self.logger.info(
+            f"Scrape concluído: {emails_added} emails novos "
+            f"({emails_skipped} existiam), "
+            f"{attachments_added} anexos novos "
+            f"({attachments_skipped} existiam)"
+        )
+
+        return (emails_added, emails_skipped, attachments_added, attachments_skipped)
+
+    def scrape_all_to_inbox(
+        self,
+        email_filter: Optional[EmailFilter] = None,
+        account: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> tuple[int, int, int, int]:
+        """Scrape from all providers and store in inbox database.
+
+        Args:
+            email_filter: Optional filter criteria.
+            account: Optional account name.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Tuple of total (emails_added, emails_skipped, attachments_added, attachments_skipped).
+        """
+        total_emails_added = 0
+        total_emails_skipped = 0
+        total_attachments_added = 0
+        total_attachments_skipped = 0
+
+        for provider_id in EMAIL_PROVIDERS:
+            try:
+                ea, es, aa, as_ = self.scrape_to_inbox(
+                    provider_id,
+                    email_filter,
+                    account,
+                    progress_callback,
+                )
+                total_emails_added += ea
+                total_emails_skipped += es
+                total_attachments_added += aa
+                total_attachments_skipped += as_
+            except Exception as e:
+                self.logger.error(f"Erro no provider {provider_id}: {e}")
+                continue
+
+        return (
+            total_emails_added,
+            total_emails_skipped,
+            total_attachments_added,
+            total_attachments_skipped,
+        )
