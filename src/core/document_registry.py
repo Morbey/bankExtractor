@@ -65,13 +65,15 @@ class Entity:
     entity_type: EntityType = EntityType.DESCONHECIDO
     nifs: list[str] = field(default_factory=list)
     ibans: list[str] = field(default_factory=list)
-    emails: list[str] = field(default_factory=list)
+    emails: list[str] = field(default_factory=list)  # Contact emails
+    sender_emails: list[str] = field(default_factory=list)  # Email addresses that send invoices
     aliases: list[str] = field(default_factory=list)  # Alternative names
     notes: str = ""
     created_at: str = ""
 
     def matches(self, nif: Optional[str] = None, iban: Optional[str] = None,
-                email: Optional[str] = None, name: Optional[str] = None) -> bool:
+                email: Optional[str] = None, name: Optional[str] = None,
+                sender_email: Optional[str] = None) -> bool:
         """Check if entity matches any of the provided identifiers."""
         if nif and nif in self.nifs:
             return True
@@ -80,6 +82,8 @@ class Entity:
             if normalized_iban in [re.sub(r"\s+", "", i).upper() for i in self.ibans]:
                 return True
         if email and email.lower() in [e.lower() for e in self.emails]:
+            return True
+        if sender_email and sender_email.lower() in [e.lower() for e in self.sender_emails]:
             return True
         if name:
             name_lower = name.lower()
@@ -98,6 +102,7 @@ class Entity:
             "nifs": self.nifs,
             "ibans": self.ibans,
             "emails": self.emails,
+            "sender_emails": self.sender_emails,
             "aliases": self.aliases,
             "notes": self.notes,
             "created_at": self.created_at,
@@ -113,6 +118,7 @@ class Entity:
             nifs=data.get("nifs", []),
             ibans=data.get("ibans", []),
             emails=data.get("emails", []),
+            sender_emails=data.get("sender_emails", []),
             aliases=data.get("aliases", []),
             notes=data.get("notes", ""),
             created_at=data.get("created_at", ""),
@@ -307,6 +313,7 @@ class DocumentRegistry:
         nifs: Optional[list[str]] = None,
         ibans: Optional[list[str]] = None,
         emails: Optional[list[str]] = None,
+        sender_emails: Optional[list[str]] = None,
     ) -> Entity:
         """Create and add a new entity."""
         entity = Entity(
@@ -317,6 +324,7 @@ class DocumentRegistry:
             nifs=nifs or [],
             ibans=[re.sub(r"\s+", "", i).upper() for i in (ibans or [])],
             emails=emails or [],
+            sender_emails=[e.lower() for e in (sender_emails or [])],
             created_at=datetime.now().isoformat(),
         )
         return self.add_entity(entity)
@@ -327,10 +335,11 @@ class DocumentRegistry:
         iban: Optional[str] = None,
         email: Optional[str] = None,
         name: Optional[str] = None,
+        sender_email: Optional[str] = None,
     ) -> Optional[Entity]:
         """Find an entity by any identifier."""
         for entity in self._entities.values():
-            if entity.matches(nif=nif, iban=iban, email=email, name=name):
+            if entity.matches(nif=nif, iban=iban, email=email, name=name, sender_email=sender_email):
                 return entity
         return None
 
@@ -366,6 +375,18 @@ class DocumentRegistry:
             if nif not in entity.nifs:
                 entity.nifs.append(nif)
                 self._save_entities()
+            return True
+        return False
+
+    def add_sender_email_to_entity(self, entity_id: str, sender_email: str) -> bool:
+        """Add a sender email to an entity for automatic matching."""
+        entity = self.get_entity(entity_id)
+        if entity:
+            normalized = sender_email.lower()
+            if normalized not in entity.sender_emails:
+                entity.sender_emails.append(normalized)
+                self._save_entities()
+                logger.info(f"Sender email '{sender_email}' added to entity '{entity.name}'")
             return True
         return False
 

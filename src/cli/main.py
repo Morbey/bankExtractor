@@ -620,8 +620,20 @@ def faturas(
         "--config", "-c",
         help="Configurar credenciais de email",
     ),
+    organizar: bool = typer.Option(
+        True,
+        "--organizar/--sem-organizar",
+        help="Organizar faturas após download (default: sim)",
+    ),
+    mover: bool = typer.Option(
+        False,
+        "--mover", "-m",
+        help="Mover ficheiros em vez de copiar ao organizar",
+    ),
 ):
     """Descarregar faturas do email."""
+    from src.modules.invoices import InvoiceProcessor
+
     console.print(Panel.fit(
         f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
         "Download de faturas por email",
@@ -662,7 +674,7 @@ def faturas(
 
     for prov_id in providers_to_process:
         display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
-        console.print(f"\n[bold cyan]Processando {display_name}...[/bold cyan]")
+        console.print(f"\n[bold cyan]A descarregar de {display_name}...[/bold cyan]")
         try:
             email_filter = EmailFilter(
                 start_date=start_date,
@@ -673,8 +685,22 @@ def faturas(
         except Exception as e:
             console.print(f"[red]Erro: {e}[/red]")
 
-    # Summary
-    if all_invoices:
+    if not all_invoices:
+        console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
+        return
+
+    # Show download summary
+    console.print(f"\n[green]Descarregadas {len(all_invoices)} faturas[/green]")
+
+    # Process and organize invoices
+    if organizar:
+        console.print(f"\n[bold cyan]A organizar faturas...[/bold cyan]")
+        console.print("[dim]Para cada fatura desconhecida, será mostrada informação para identificação.[/dim]\n")
+
+        processor = InvoiceProcessor()
+        processor.process_invoices(all_invoices, interactive=True, move=mover)
+    else:
+        # Just show what was downloaded
         table = Table(title="Faturas Descarregadas")
         table.add_column("Provider", style="cyan")
         table.add_column("Remetente", style="green", max_width=30)
@@ -693,10 +719,8 @@ def faturas(
             )
 
         console.print(table)
-        console.print(f"\n[green]Total: {len(all_invoices)} faturas descarregadas[/green]")
-        console.print(f"[dim]Guardadas em: {settings.faturas_dir}[/dim]")
-    else:
-        console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
+        console.print(f"\n[dim]Guardadas em: {settings.faturas_dir}[/dim]")
+        console.print("[dim]Use --organizar para organizar as faturas por entidade[/dim]")
 
 
 def _configure_email_credentials(provider: str, account: Optional[str] = None) -> None:

@@ -24,6 +24,7 @@ from .downloader import EMAIL_PROVIDERS, InvoiceDownloader
 from .email_client import EmailAttachment, EmailClient, InvoiceEmail
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
+from .invoice_processor import InvoiceProcessor, ProcessedInvoice
 from .pdf_parser import InvoiceMetadata, PDFInvoiceParser
 
 __all__ = [
@@ -38,6 +39,9 @@ __all__ = [
     "EMAIL_PROVIDERS",
     # Main downloader
     "InvoiceDownloader",
+    # Invoice processor
+    "InvoiceProcessor",
+    "ProcessedInvoice",
     # Legacy email client (for backward compatibility)
     "EmailClient",
     "InvoiceEmail",
