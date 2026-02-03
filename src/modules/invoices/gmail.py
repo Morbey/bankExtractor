@@ -230,6 +230,53 @@ class GmailProvider(EmailProviderBase):
                             return True
         return False
 
+    def _extract_email_body(self, message: Message) -> str:
+        """Extract plain text body from email message.
+
+        Args:
+            message: Email message
+
+        Returns:
+            Plain text body content
+        """
+        body_parts = []
+
+        for part in message.walk():
+            content_type = part.get_content_type()
+            content_disposition = part.get("Content-Disposition", "")
+
+            # Skip attachments
+            if "attachment" in content_disposition:
+                continue
+
+            # Get plain text parts
+            if content_type == "text/plain":
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        text = payload.decode(charset, errors="replace")
+                        body_parts.append(text)
+                except Exception:
+                    pass
+
+            # Fallback to HTML if no plain text
+            elif content_type == "text/html" and not body_parts:
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        html = payload.decode(charset, errors="replace")
+                        # Basic HTML to text - remove tags
+                        import re
+                        text = re.sub(r'<[^>]+>', ' ', html)
+                        text = re.sub(r'\s+', ' ', text).strip()
+                        body_parts.append(text)
+                except Exception:
+                    pass
+
+        return "\n".join(body_parts)
+
     def download_attachments(
         self,
         message: Message,
@@ -249,6 +296,7 @@ class GmailProvider(EmailProviderBase):
         sender = self._decode_header_value(message.get("From", ""))
         subject = self._decode_header_value(message.get("Subject", ""))
         email_date = self._get_email_date(message)
+        email_body = self._extract_email_body(message)
 
         for part in message.walk():
             content_disposition = part.get("Content-Disposition", "")
@@ -300,6 +348,7 @@ class GmailProvider(EmailProviderBase):
                     file_path=file_path,
                     file_name=filename,
                     file_size=len(data),
+                    email_body=email_body,
                 )
             )
 

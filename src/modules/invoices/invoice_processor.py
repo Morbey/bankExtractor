@@ -411,29 +411,20 @@ class InvoiceProcessor:
         console.print("Que critérios usar para identificar automaticamente futuras faturas?")
 
         rule_conditions = []
+        option_num = 1
 
         # Option 1: Sender email (always suggested)
-        console.print(f"\n1. Email remetente: [cyan]{invoice.sender}[/cyan]")
+        console.print(f"\n{option_num}. Email remetente: [cyan]{invoice.sender}[/cyan]")
         if Confirm.ask("   Usar email do remetente?", default=True):
             rule_conditions.append(RuleCondition(
                 source=MatchSource.SENDER_EMAIL,
                 match_type=MatchType.EXACT,
                 pattern=invoice.sender,
             ))
+        option_num += 1
 
-        # Option 2: NIF from PDF
-        nifs = pdf_info.get("nifs", [])
-        if nifs:
-            console.print(f"\n2. NIF no PDF: [cyan]{', '.join(nifs)}[/cyan]")
-            if Confirm.ask("   Usar NIF do PDF?", default=True):
-                rule_conditions.append(RuleCondition(
-                    source=MatchSource.PDF_NIF,
-                    match_type=MatchType.CONTAINS,
-                    pattern=nifs[0],
-                ))
-
-        # Option 3: Subject pattern
-        console.print(f"\n3. Assunto: [cyan]{invoice.subject}[/cyan]")
+        # Option 2: Subject pattern
+        console.print(f"\n{option_num}. Assunto: [cyan]{invoice.subject}[/cyan]")
         if Confirm.ask("   Usar padrão no assunto?", default=False):
             subject_pattern = Prompt.ask("   Padrão a procurar no assunto", default=invoice.subject[:30])
             if subject_pattern:
@@ -442,30 +433,68 @@ class InvoiceProcessor:
                     match_type=MatchType.CONTAINS,
                     pattern=subject_pattern,
                 ))
+        option_num += 1
 
-        # Option 4: PDF content pattern
-        vendor = pdf_info.get("vendor")
-        if vendor:
-            console.print(f"\n4. Texto no PDF: [cyan]{vendor}[/cyan]")
-            if Confirm.ask("   Usar padrão no conteúdo do PDF?", default=False):
-                pdf_pattern = Prompt.ask("   Padrão a procurar no PDF", default=vendor)
-                if pdf_pattern:
-                    rule_conditions.append(RuleCondition(
-                        source=MatchSource.PDF_CONTENT,
-                        match_type=MatchType.CONTAINS,
-                        pattern=pdf_pattern,
-                    ))
-
-        # Option 5: Custom body pattern
+        # Option 3: Body pattern (always show, with preview if available)
+        body_preview = ""
         if email_body:
-            if Confirm.ask("\n5. Usar padrão no body do email?", default=False):
-                body_pattern = Prompt.ask("   Padrão a procurar no body")
-                if body_pattern:
-                    rule_conditions.append(RuleCondition(
-                        source=MatchSource.BODY,
-                        match_type=MatchType.CONTAINS,
-                        pattern=body_pattern,
-                    ))
+            body_preview = email_body[:100].replace("\n", " ")
+            if len(email_body) > 100:
+                body_preview += "..."
+            console.print(f"\n{option_num}. Body do email: [cyan]{body_preview}[/cyan]")
+        else:
+            console.print(f"\n{option_num}. Body do email: [dim](não disponível)[/dim]")
+
+        if Confirm.ask("   Usar padrão no body do email?", default=False):
+            if email_body:
+                # Show more of the body to help user identify a pattern
+                console.print(f"   [dim]Primeiros 500 chars:[/dim]")
+                console.print(f"   {email_body[:500]}")
+            body_pattern = Prompt.ask("   Padrão a procurar no body")
+            if body_pattern:
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.BODY,
+                    match_type=MatchType.CONTAINS,
+                    pattern=body_pattern,
+                ))
+        option_num += 1
+
+        # Option 4: PDF content pattern (always show, with preview)
+        raw_text = pdf_info.get("raw_text", "")
+        vendor = pdf_info.get("vendor")
+        if raw_text:
+            pdf_preview = raw_text[:100].replace("\n", " ")
+            if len(raw_text) > 100:
+                pdf_preview += "..."
+            console.print(f"\n{option_num}. Conteúdo do PDF: [cyan]{pdf_preview}[/cyan]")
+        else:
+            console.print(f"\n{option_num}. Conteúdo do PDF: [dim](não disponível)[/dim]")
+
+        if Confirm.ask("   Usar padrão no conteúdo do PDF?", default=False):
+            if raw_text:
+                # Show more of the PDF to help user identify a pattern
+                console.print(f"   [dim]Primeiros 500 chars:[/dim]")
+                console.print(f"   {raw_text[:500]}")
+            default_pdf_pattern = vendor if vendor else ""
+            pdf_pattern = Prompt.ask("   Padrão a procurar no PDF", default=default_pdf_pattern)
+            if pdf_pattern:
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.PDF_CONTENT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=pdf_pattern,
+                ))
+        option_num += 1
+
+        # Option 5: NIF from PDF (if found)
+        nifs = pdf_info.get("nifs", [])
+        if nifs:
+            console.print(f"\n{option_num}. NIF no PDF: [cyan]{', '.join(nifs)}[/cyan]")
+            if Confirm.ask("   Usar NIF do PDF?", default=False):
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.PDF_NIF,
+                    match_type=MatchType.CONTAINS,
+                    pattern=nifs[0],
+                ))
 
         # Create rule if conditions were selected
         if rule_conditions:
@@ -690,8 +719,11 @@ class InvoiceProcessor:
             # Extract PDF information
             pdf_info = self.extract_pdf_info(invoice.file_path)
 
+            # Get email body from invoice
+            email_body = invoice.email_body
+
             # Try to find matching entity
-            entity, match_reason = self.find_entity_for_invoice(invoice, pdf_info)
+            entity, match_reason = self.find_entity_for_invoice(invoice, pdf_info, email_body)
 
             if entity:
                 # Known entity - organize automatically
@@ -702,7 +734,7 @@ class InvoiceProcessor:
                 # Show summary and prompt
                 console.print(f"\n[yellow]?[/yellow] {invoice.file_name}")
                 self.show_invoice_summary(invoice, pdf_info)
-                entity = self.prompt_for_entity(invoice, pdf_info)
+                entity = self.prompt_for_entity(invoice, pdf_info, email_body)
 
             if entity:
                 # Organize the file

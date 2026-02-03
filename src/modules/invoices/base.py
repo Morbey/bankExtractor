@@ -21,6 +21,7 @@ class DownloadedInvoice:
     file_path: Path
     file_name: str
     file_size: int
+    email_body: Optional[str] = None  # Plain text body of the email
 
 
 @dataclass
