@@ -56,6 +56,12 @@ class EntityType(str, Enum):
     DESCONHECIDO = "desconhecido"
 
 
+class AccountingScope(str, Enum):
+    """Accounting scope for document organization."""
+    PESSOAL = "pessoal"  # Personal accounting
+    EMPRESA = "empresa"  # Business accounting
+
+
 @dataclass
 class Entity:
     """Represents an actor/entity in the system."""
@@ -63,6 +69,7 @@ class Entity:
     name: str
     folder_name: str
     entity_type: EntityType = EntityType.DESCONHECIDO
+    scope: AccountingScope = AccountingScope.EMPRESA  # Default to business
     nifs: list[str] = field(default_factory=list)
     ibans: list[str] = field(default_factory=list)
     emails: list[str] = field(default_factory=list)  # Contact emails
@@ -99,6 +106,7 @@ class Entity:
             "name": self.name,
             "folder_name": self.folder_name,
             "entity_type": self.entity_type.value,
+            "scope": self.scope.value,
             "nifs": self.nifs,
             "ibans": self.ibans,
             "emails": self.emails,
@@ -115,6 +123,7 @@ class Entity:
             name=data["name"],
             folder_name=data["folder_name"],
             entity_type=EntityType(data.get("entity_type", "desconhecido")),
+            scope=AccountingScope(data.get("scope", "empresa")),
             nifs=data.get("nifs", []),
             ibans=data.get("ibans", []),
             emails=data.get("emails", []),
@@ -310,6 +319,7 @@ class DocumentRegistry:
         name: str,
         folder_name: str,
         entity_type: EntityType = EntityType.DESCONHECIDO,
+        scope: AccountingScope = AccountingScope.EMPRESA,
         nifs: Optional[list[str]] = None,
         ibans: Optional[list[str]] = None,
         emails: Optional[list[str]] = None,
@@ -321,6 +331,7 @@ class DocumentRegistry:
             name=name,
             folder_name=folder_name,
             entity_type=entity_type,
+            scope=scope,
             nifs=nifs or [],
             ibans=[re.sub(r"\s+", "", i).upper() for i in (ibans or [])],
             emails=emails or [],
@@ -356,6 +367,23 @@ class DocumentRegistry:
         if entity.id in self._entities:
             self._entities[entity.id] = entity
             self._save_entities()
+
+    def delete_entity(self, entity_id: str) -> bool:
+        """Delete an entity.
+
+        Args:
+            entity_id: ID of entity to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        if entity_id in self._entities:
+            entity_name = self._entities[entity_id].name
+            del self._entities[entity_id]
+            self._save_entities()
+            logger.info(f"Deleted entity: {entity_name}")
+            return True
+        return False
 
     def add_iban_to_entity(self, entity_id: str, iban: str) -> bool:
         """Add an IBAN to an entity."""

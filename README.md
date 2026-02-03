@@ -306,6 +306,17 @@ data/
 
 ## Troubleshooting
 
+Para um guia completo de resolução de problemas, consulte [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+### Quick Fixes
+
+| Problema | Solução Rápida |
+|----------|----------------|
+| Gmail auth failed | Use App Password, não password normal |
+| Banco timeout | Defina `HEADLESS=false` no `.env` |
+| Documento desconhecido | Execute com `--interativo` |
+| OCR não funciona | `pip install bank-extractor[ocr]` |
+
 ### Gmail: "Authentication failed"
 1. Verificar se a App Password está correta (sem espaços)
 2. Verificar se "Less secure app access" NÃO está ativado

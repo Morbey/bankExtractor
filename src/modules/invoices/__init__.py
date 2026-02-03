@@ -19,8 +19,9 @@ from .base import (
     DownloadedInvoice,
     EmailFilter,
     EmailProviderBase,
+    ProgressCallback,
 )
-from .downloader import EMAIL_PROVIDERS, InvoiceDownloader
+from .downloader import EMAIL_PROVIDERS, InvoiceDownloader, _DOWNLOAD_COMPLETE
 from .email_client import EmailAttachment, EmailClient, InvoiceEmail
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
@@ -33,6 +34,7 @@ __all__ = [
     "EmailFilter",
     "DownloadedInvoice",
     "COMMON_INVOICE_SENDERS",
+    "ProgressCallback",
     # Providers
     "GmailProvider",
     "HotmailProvider",
