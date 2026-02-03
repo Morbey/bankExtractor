@@ -29,6 +29,7 @@ from src.core.document_registry import (
     get_document_registry,
 )
 from src.core.logger import get_logger
+from src.core.rules_manager import get_rules_manager
 from src.modules.invoices.base import DownloadedInvoice
 
 console = Console()
@@ -69,6 +70,7 @@ class InvoiceProcessor:
     def __init__(self):
         """Initialize the invoice processor."""
         self.registry = get_document_registry()
+        self.rules_manager = get_rules_manager()
         self._pdf_parser = None
 
     @property
@@ -238,7 +240,7 @@ class InvoiceProcessor:
         if choice == "1":
             return self._create_entity_interactive(invoice, pdf_info)
         elif choice == "2":
-            return self._select_existing_entity(invoice)
+            return self._select_existing_entity(invoice, pdf_info)
         else:
             return None
 
@@ -294,16 +296,21 @@ class InvoiceProcessor:
         console.print(f"[green]Entidade '{name}' criada![/green]")
         console.print(f"[dim]Próximos emails de {invoice.sender} serão automaticamente associados.[/dim]")
 
+        # Learn classification rules from this new entity
+        self._learn_from_classification(invoice, pdf_info)
+
         return entity
 
     def _select_existing_entity(
         self,
         invoice: DownloadedInvoice,
+        pdf_info: Optional[dict] = None,
     ) -> Optional[Entity]:
         """Select an existing entity and add sender mapping.
 
         Args:
             invoice: Downloaded invoice.
+            pdf_info: Extracted PDF information (for learning).
 
         Returns:
             Selected entity or None.
@@ -327,11 +334,51 @@ class InvoiceProcessor:
                 self.registry.add_sender_email_to_entity(entity.id, invoice.sender)
                 console.print(f"[green]Associado a '{entity.name}'[/green]")
                 console.print(f"[dim]Próximos emails de {invoice.sender} serão automaticamente associados.[/dim]")
+
+                # Learn classification rules from this association
+                if pdf_info:
+                    self._learn_from_classification(invoice, pdf_info)
+
                 return entity
         except ValueError:
             pass
 
         return None
+
+    def _learn_from_classification(
+        self,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+    ) -> None:
+        """Learn classification rules from a manual classification.
+
+        Args:
+            invoice: Downloaded invoice with sender info.
+            pdf_info: Extracted PDF information with NIFs.
+        """
+        from src.core.categories import InvoiceCategory, InvoiceCategorizer
+
+        # Try to determine category from entity folder or PDF content
+        categorizer = InvoiceCategorizer()
+
+        # Try sender-based categorization
+        category = categorizer.categorize_by_sender(invoice.sender)
+
+        # If not found, try content-based
+        if category == InvoiceCategory.OUTROS and pdf_info.get("raw_text"):
+            category = categorizer.categorize_by_content(pdf_info["raw_text"])
+
+        # Only learn if we have a meaningful category
+        if category != InvoiceCategory.OUTROS:
+            learned = self.rules_manager.learn_from_classification(
+                sender=invoice.sender,
+                email_body=getattr(invoice, "email_body", None),
+                pdf_content=pdf_info.get("raw_text"),
+                nifs=pdf_info.get("nifs", []),
+                category=category,
+            )
+            if learned:
+                logger.debug(f"Learned {len(learned)} classification rules from invoice.")
 
     def organize_invoice(
         self,

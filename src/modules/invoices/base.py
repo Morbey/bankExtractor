@@ -11,6 +11,31 @@ from src.core import CredentialManager, get_logger, settings
 
 
 @dataclass
+class EmailAttachmentInfo:
+    """Information about an email attachment."""
+
+    filename: str
+    content_type: str
+    size: int
+    index: int  # Position in the email for selective download
+
+
+@dataclass
+class EmailMessage:
+    """Represents an email message with body and attachment info."""
+
+    message_id: str
+    provider: str
+    sender: str
+    subject: str
+    date: datetime
+    body_text: str  # Plain text body
+    body_html: str  # HTML body (if available)
+    attachments: list[EmailAttachmentInfo]
+    _raw_message: Optional[Message] = None  # Internal: raw message for attachment download
+
+
+@dataclass
 class DownloadedInvoice:
     """Represents a downloaded invoice."""
 
@@ -21,6 +46,7 @@ class DownloadedInvoice:
     file_path: Path
     file_name: str
     file_size: int
+    email_body: str = ""  # Email body text for reference
 
 
 @dataclass
@@ -171,6 +197,40 @@ class EmailProviderBase(ABC):
             List of downloaded invoice information.
         """
         pass
+
+    def get_email_messages(
+        self,
+        email_filter: Optional[EmailFilter] = None,
+    ) -> list[EmailMessage]:
+        """Get email messages with body and attachment info (without downloading).
+
+        Args:
+            email_filter: Filter criteria for searching emails.
+
+        Returns:
+            List of EmailMessage objects with body text and attachment info.
+        """
+        # Default implementation - subclasses should override for better efficiency
+        return []
+
+    def download_attachment(
+        self,
+        email_message: EmailMessage,
+        attachment_index: int,
+        dest_dir: Optional[Path] = None,
+    ) -> Optional[DownloadedInvoice]:
+        """Download a specific attachment from an email.
+
+        Args:
+            email_message: The email message containing the attachment.
+            attachment_index: Index of the attachment to download.
+            dest_dir: Destination directory (defaults to faturas_dir).
+
+        Returns:
+            DownloadedInvoice if successful, None otherwise.
+        """
+        # Default implementation - subclasses should override
+        return None
 
     def run(
         self,

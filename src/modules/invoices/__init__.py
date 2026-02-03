@@ -17,7 +17,9 @@ Example usage:
 from .base import (
     COMMON_INVOICE_SENDERS,
     DownloadedInvoice,
+    EmailAttachmentInfo,
     EmailFilter,
+    EmailMessage,
     EmailProviderBase,
 )
 from .downloader import EMAIL_PROVIDERS, InvoiceDownloader
@@ -32,6 +34,8 @@ __all__ = [
     "EmailProviderBase",
     "EmailFilter",
     "DownloadedInvoice",
+    "EmailMessage",
+    "EmailAttachmentInfo",
     "COMMON_INVOICE_SENDERS",
     # Providers
     "GmailProvider",

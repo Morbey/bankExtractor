@@ -13,6 +13,12 @@ from .document_registry import (
 )
 from .iban_manager import IBANManager, get_iban_manager
 from .logger import get_logger
+from .rules_manager import (
+    ClassificationResult,
+    ClassificationRulesManager,
+    LearnedRule,
+    get_rules_manager,
+)
 from .transfer_manager import TransferInfo, TransferManager, get_transfer_manager
 
 __all__ = [
@@ -31,4 +37,8 @@ __all__ = [
     "Entity",
     "EntityType",
     "get_document_registry",
+    "ClassificationRulesManager",
+    "ClassificationResult",
+    "LearnedRule",
+    "get_rules_manager",
 ]

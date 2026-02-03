@@ -1907,6 +1907,477 @@ def tendencias(
     console.print(summary)
 
 
+# ============================================================================
+# EMAIL BROWSING (View body and selective attachment download)
+# ============================================================================
+
+
+@app.command()
+def emails(
+    provider: str = typer.Argument(
+        "todos",
+        help="Provider de email: gmail, hotmail, ou 'todos'",
+    ),
+    dias: int = typer.Option(
+        settings.invoice_days_default,
+        "--dias", "-d",
+        help="Número de dias a pesquisar",
+    ),
+    inicio: Optional[str] = typer.Option(
+        None,
+        "--inicio", "-i",
+        help="Data início (DD-MM-YYYY)",
+    ),
+    fim: Optional[str] = typer.Option(
+        None,
+        "--fim", "-f",
+        help="Data fim (DD-MM-YYYY)",
+    ),
+    conta: Optional[str] = typer.Option(
+        None,
+        "--conta",
+        help="Nome da conta",
+    ),
+    ver_corpo: bool = typer.Option(
+        False,
+        "--ver-corpo", "-b",
+        help="Mostrar corpo dos emails",
+    ),
+    interativo: bool = typer.Option(
+        False,
+        "--interativo", "-I",
+        help="Modo interativo para seleccionar anexos",
+    ),
+):
+    """Navegar emails com anexos - ver corpo e descarregar anexos individualmente."""
+    from src.modules.invoices import EMAIL_PROVIDERS
+
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Navegação de Emails",
+        border_style="blue",
+    ))
+
+    # Determine providers
+    if provider.lower() == "todos":
+        providers_to_process = list(EMAIL_PROVIDERS.keys())
+    elif provider.lower() in EMAIL_PROVIDERS:
+        providers_to_process = [provider.lower()]
+    else:
+        console.print(f"[red]Provider desconhecido: {provider}[/red]")
+        raise typer.Exit(1)
+
+    # Parse dates
+    if inicio:
+        start_date = parse_date(inicio)
+    else:
+        from datetime import timedelta
+        start_date = date.today() - timedelta(days=dias)
+
+    end_date = parse_date(fim) if fim else date.today()
+
+    console.print(f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]")
+
+    all_email_messages = []
+
+    for prov_id in providers_to_process:
+        display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
+        console.print(f"\n[bold cyan]A pesquisar em {display_name}...[/bold cyan]")
+
+        try:
+            provider_class = EMAIL_PROVIDERS[prov_id]
+            with provider_class(account=conta) as prov:
+                email_filter = EmailFilter(
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                messages = prov.get_email_messages(email_filter)
+                all_email_messages.extend(messages)
+                console.print(f"  Encontrados {len(messages)} emails com anexos")
+        except Exception as e:
+            console.print(f"[red]Erro: {e}[/red]")
+
+    if not all_email_messages:
+        console.print("\n[yellow]Nenhum email encontrado.[/yellow]")
+        return
+
+    # Display emails
+    console.print(f"\n[green]Total: {len(all_email_messages)} emails[/green]\n")
+
+    for idx, email_msg in enumerate(all_email_messages, 1):
+        # Header
+        console.print(f"\n[bold]═══ Email {idx}/{len(all_email_messages)} ═══[/bold]")
+
+        info_table = Table(show_header=False, box=None)
+        info_table.add_column("Campo", style="cyan", width=12)
+        info_table.add_column("Valor", style="white")
+
+        info_table.add_row("De:", email_msg.sender[:60])
+        info_table.add_row("Assunto:", email_msg.subject[:70])
+        info_table.add_row("Data:", email_msg.date.strftime("%d-%m-%Y %H:%M"))
+        info_table.add_row("Provider:", email_msg.provider.upper())
+
+        console.print(Panel(info_table, border_style="blue"))
+
+        # Show attachments
+        if email_msg.attachments:
+            console.print("[bold]Anexos:[/bold]")
+            for i, att in enumerate(email_msg.attachments):
+                size_kb = att.size / 1024
+                console.print(f"  [{i}] {att.filename} ({size_kb:.1f} KB)")
+
+        # Show body if requested
+        if ver_corpo:
+            body = email_msg.body_text or "[sem corpo de texto]"
+            # Truncate long bodies
+            if len(body) > 2000:
+                body = body[:2000] + "\n\n[... truncado ...]"
+            console.print(Panel(body, title="Corpo do Email", border_style="green"))
+
+        # Interactive mode - select attachments to download
+        if interativo and email_msg.attachments:
+            console.print("\n[yellow]Opções: [número] descarregar anexo, [t] todos, [c] corpo, [n] próximo, [s] sair[/yellow]")
+
+            while True:
+                choice = Prompt.ask("Escolha", default="n")
+
+                if choice.lower() == "s":
+                    console.print("[yellow]Saindo...[/yellow]")
+                    return
+                elif choice.lower() == "n":
+                    break
+                elif choice.lower() == "c":
+                    body = email_msg.body_text or "[sem corpo de texto]"
+                    console.print(Panel(body, title="Corpo do Email", border_style="green"))
+                elif choice.lower() == "t":
+                    # Download all attachments
+                    for prov_id in providers_to_process:
+                        provider_class = EMAIL_PROVIDERS[prov_id]
+                        with provider_class(account=conta) as prov:
+                            for att_idx in range(len(email_msg.attachments)):
+                                result = prov.download_attachment(email_msg, att_idx)
+                                if result:
+                                    console.print(f"[green]✓ Guardado: {result.file_path.name}[/green]")
+                            break
+                elif choice.isdigit():
+                    att_idx = int(choice)
+                    if 0 <= att_idx < len(email_msg.attachments):
+                        for prov_id in providers_to_process:
+                            provider_class = EMAIL_PROVIDERS[prov_id]
+                            with provider_class(account=conta) as prov:
+                                result = prov.download_attachment(email_msg, att_idx)
+                                if result:
+                                    console.print(f"[green]✓ Guardado: {result.file_path.name}[/green]")
+                                break
+                    else:
+                        console.print("[red]Índice inválido[/red]")
+
+    console.print(f"\n[dim]Emails processados: {len(all_email_messages)}[/dim]")
+
+
+# ============================================================================
+# CLASSIFICATION RULES MANAGEMENT
+# ============================================================================
+
+
+@app.command()
+def regras(
+    acao: str = typer.Argument(
+        "listar",
+        help="Ação: listar, adicionar, remover, limpar, exportar, importar",
+    ),
+    tipo: Optional[str] = typer.Option(
+        None,
+        "--tipo", "-t",
+        help="Tipo de regra: sender, body_pattern, pdf_pattern, nif",
+    ),
+    padrao: Optional[str] = typer.Option(
+        None,
+        "--padrao", "-p",
+        help="Padrão a adicionar (email, regex, ou NIF)",
+    ),
+    categoria: Optional[str] = typer.Option(
+        None,
+        "--categoria", "-c",
+        help="Categoria para a regra",
+    ),
+    rule_id: Optional[str] = typer.Option(
+        None,
+        "--id",
+        help="ID da regra (para remover)",
+    ),
+    ficheiro: Optional[str] = typer.Option(
+        None,
+        "--ficheiro", "-f",
+        help="Ficheiro para exportar/importar",
+    ),
+):
+    """Gerir regras de classificação automática."""
+    from src.core import get_rules_manager
+    from src.core.categories import InvoiceCategory
+
+    console.print(Panel.fit(
+        f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
+        "Gestão de Regras de Classificação",
+        border_style="green",
+    ))
+
+    rules_manager = get_rules_manager()
+    acao_lower = acao.lower()
+
+    if acao_lower == "listar":
+        rules = rules_manager.get_all_rules()
+
+        if not rules:
+            console.print("\n[yellow]Nenhuma regra de classificação definida.[/yellow]")
+            console.print("[dim]As regras são aprendidas automaticamente ao classificar faturas,[/dim]")
+            console.print("[dim]ou podem ser adicionadas manualmente com: bank-extractor regras adicionar[/dim]")
+            return
+
+        console.print(f"\n[bold]Regras de Classificação ({len(rules)})[/bold]\n")
+
+        # Group by type
+        by_type: dict[str, list] = {}
+        for rule in rules:
+            by_type.setdefault(rule.rule_type, []).append(rule)
+
+        for rule_type, type_rules in by_type.items():
+            type_name = {
+                "sender": "Por Remetente",
+                "body_pattern": "Por Padrão no Corpo",
+                "pdf_pattern": "Por Padrão no PDF",
+                "nif": "Por NIF",
+            }.get(rule_type, rule_type)
+
+            console.print(f"\n[bold cyan]{type_name}[/bold cyan]")
+
+            table = Table(show_header=True)
+            table.add_column("ID", style="dim", width=12)
+            table.add_column("Padrão", style="white")
+            table.add_column("Categoria", style="green")
+            table.add_column("Usos", justify="right")
+            table.add_column("Confiança", justify="right")
+
+            for rule in sorted(type_rules, key=lambda r: r.match_count, reverse=True):
+                confidence_pct = f"{rule.confidence * 100:.0f}%"
+                table.add_row(
+                    rule.id[:12],
+                    rule.pattern[:40] + "..." if len(rule.pattern) > 40 else rule.pattern,
+                    rule.category,
+                    str(rule.match_count),
+                    confidence_pct,
+                )
+
+            console.print(table)
+
+    elif acao_lower == "adicionar":
+        if not tipo:
+            console.print("[red]Tipo de regra obrigatório. Use --tipo[/red]")
+            console.print("Tipos: sender, body_pattern, pdf_pattern, nif")
+            raise typer.Exit(1)
+
+        if not padrao:
+            console.print("[red]Padrão obrigatório. Use --padrao[/red]")
+            raise typer.Exit(1)
+
+        if not categoria:
+            console.print("[red]Categoria obrigatória. Use --categoria[/red]")
+            console.print(f"Categorias: {', '.join(c.value for c in InvoiceCategory)}")
+            raise typer.Exit(1)
+
+        try:
+            cat = InvoiceCategory(categoria.lower())
+        except ValueError:
+            console.print(f"[red]Categoria inválida: {categoria}[/red]")
+            raise typer.Exit(1)
+
+        tipo_lower = tipo.lower()
+        if tipo_lower == "sender":
+            rule = rules_manager.add_sender_rule(padrao, cat, source="manual")
+        elif tipo_lower == "body_pattern":
+            rule = rules_manager.add_body_pattern_rule(padrao, cat, source="manual")
+        elif tipo_lower == "pdf_pattern":
+            rule = rules_manager.add_pdf_pattern_rule(padrao, cat, source="manual")
+        elif tipo_lower == "nif":
+            rule = rules_manager.add_nif_rule(padrao, cat, source="manual")
+        else:
+            console.print(f"[red]Tipo inválido: {tipo}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[green]Regra adicionada:[/green]")
+        console.print(f"  ID: {rule.id}")
+        console.print(f"  Tipo: {rule.rule_type}")
+        console.print(f"  Padrão: {rule.pattern}")
+        console.print(f"  Categoria: {rule.category}")
+
+    elif acao_lower == "remover":
+        if not rule_id:
+            console.print("[red]ID da regra obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        if rules_manager.delete_rule(rule_id):
+            console.print(f"[green]Regra {rule_id} removida.[/green]")
+        else:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+
+    elif acao_lower == "limpar":
+        rules = rules_manager.get_all_rules()
+        if not rules:
+            console.print("[yellow]Não há regras para limpar.[/yellow]")
+            return
+
+        if Confirm.ask(f"Limpar todas as {len(rules)} regras?"):
+            count = rules_manager.clear_all_rules()
+            console.print(f"[green]{count} regras removidas.[/green]")
+
+    elif acao_lower == "exportar":
+        if not ficheiro:
+            ficheiro = str(settings.data_dir / "classification_rules_export.json")
+
+        from pathlib import Path
+        output_path = Path(ficheiro)
+
+        if rules_manager.export_rules(output_path):
+            console.print(f"[green]Regras exportadas para: {output_path}[/green]")
+        else:
+            console.print("[red]Erro ao exportar regras.[/red]")
+
+    elif acao_lower == "importar":
+        if not ficheiro:
+            console.print("[red]Ficheiro obrigatório. Use --ficheiro[/red]")
+            raise typer.Exit(1)
+
+        from pathlib import Path
+        input_path = Path(ficheiro)
+
+        if not input_path.exists():
+            console.print(f"[red]Ficheiro não encontrado: {input_path}[/red]")
+            raise typer.Exit(1)
+
+        count = rules_manager.import_rules(input_path, merge=True)
+        console.print(f"[green]Importadas {count} regras.[/green]")
+
+    else:
+        console.print(f"[red]Ação desconhecida: {acao}[/red]")
+        console.print("Ações: listar, adicionar, remover, limpar, exportar, importar")
+        raise typer.Exit(1)
+
+
+@app.command()
+def classificar(
+    ficheiro: str = typer.Argument(..., help="Caminho do ficheiro PDF a classificar"),
+    remetente: Optional[str] = typer.Option(
+        None,
+        "--remetente", "-r",
+        help="Email do remetente (para melhorar classificação)",
+    ),
+    corpo: Optional[str] = typer.Option(
+        None,
+        "--corpo", "-b",
+        help="Texto do corpo do email (para melhorar classificação)",
+    ),
+    aprender: bool = typer.Option(
+        True,
+        "--aprender/--sem-aprender",
+        help="Guardar regra se classificação manual",
+    ),
+):
+    """Classificar um ficheiro PDF usando regras automáticas."""
+    from pathlib import Path
+    from src.core import get_rules_manager
+    from src.core.categories import InvoiceCategory
+    from src.modules.invoices import PDFInvoiceParser
+
+    file_path = Path(ficheiro)
+    if not file_path.exists():
+        console.print(f"[red]Ficheiro não encontrado: {file_path}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel.fit(
+        f"[bold blue]Classificação de Documento[/bold blue]\n"
+        f"{file_path.name}",
+        border_style="blue",
+    ))
+
+    # Extract PDF content
+    parser = PDFInvoiceParser()
+    metadata = parser.parse(file_path)
+
+    pdf_content = metadata.raw_text or ""
+    nifs = []
+
+    # Extract NIFs from content
+    import re
+    nif_pattern = re.compile(r"\b(\d{9})\b")
+    if pdf_content:
+        matches = nif_pattern.findall(pdf_content)
+        for m in matches:
+            if m[0] in "12359":
+                nifs.append(m)
+        nifs = list(set(nifs))
+
+    # Show extracted info
+    console.print("\n[bold]Informação extraída:[/bold]")
+    info_table = Table(show_header=False, box=None)
+    info_table.add_column("Campo", style="cyan")
+    info_table.add_column("Valor", style="white")
+
+    info_table.add_row("Fornecedor:", metadata.vendor or "[não detectado]")
+    info_table.add_row("Valor:", f"{metadata.total_amount:.2f} EUR" if metadata.total_amount else "[não detectado]")
+    info_table.add_row("Data:", metadata.invoice_date.strftime("%d-%m-%Y") if metadata.invoice_date else "[não detectada]")
+    info_table.add_row("NIFs:", ", ".join(nifs) if nifs else "[nenhum]")
+    if remetente:
+        info_table.add_row("Remetente:", remetente)
+
+    console.print(info_table)
+
+    # Classify using rules manager
+    rules_manager = get_rules_manager()
+    result = rules_manager.classify(
+        sender=remetente,
+        email_body=corpo,
+        pdf_content=pdf_content,
+        nifs=nifs,
+    )
+
+    # Show result
+    console.print(f"\n[bold]Resultado da classificação:[/bold]")
+    console.print(f"  Categoria: [green]{result.category.value}[/green]")
+    console.print(f"  Confiança: {result.confidence * 100:.0f}%")
+    console.print(f"  Método: {result.matched_by}")
+
+    if result.matched_rule:
+        console.print(f"  Regra: {result.matched_rule.id} ({result.matched_rule.pattern[:30]}...)")
+
+    # If low confidence, offer manual classification
+    if result.confidence < 0.7 or result.category == InvoiceCategory.OUTROS:
+        console.print("\n[yellow]Classificação incerta. Deseja classificar manualmente?[/yellow]")
+        console.print(f"Categorias: {', '.join(c.value for c in InvoiceCategory)}")
+
+        manual_cat = Prompt.ask("Categoria (Enter para aceitar sugestão)", default=result.category.value)
+
+        try:
+            selected_cat = InvoiceCategory(manual_cat.lower())
+
+            if selected_cat != result.category and aprender:
+                # Learn from this classification
+                console.print("\n[cyan]A aprender com esta classificação...[/cyan]")
+                learned_rules = rules_manager.learn_from_classification(
+                    sender=remetente,
+                    email_body=corpo,
+                    pdf_content=pdf_content,
+                    nifs=nifs,
+                    category=selected_cat,
+                )
+                if learned_rules:
+                    console.print(f"[green]Criadas {len(learned_rules)} regras para classificações futuras.[/green]")
+
+            console.print(f"\n[green]Categoria final: {selected_cat.value}[/green]")
+
+        except ValueError:
+            console.print(f"[yellow]Categoria inválida, mantendo: {result.category.value}[/yellow]")
+
+
 def main():
     """Entry point."""
     app()

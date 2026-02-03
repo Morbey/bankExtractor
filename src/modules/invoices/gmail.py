@@ -10,7 +10,13 @@ from typing import Optional
 
 from src.core import settings
 
-from .base import DownloadedInvoice, EmailFilter, EmailProviderBase
+from .base import (
+    DownloadedInvoice,
+    EmailAttachmentInfo,
+    EmailFilter,
+    EmailMessage,
+    EmailProviderBase,
+)
 
 
 class GmailProvider(EmailProviderBase):
@@ -326,3 +332,217 @@ class GmailProvider(EmailProviderBase):
             filename = stem + suffix
 
         return filename
+
+    def _extract_email_body(self, msg: Message) -> tuple[str, str]:
+        """Extract plain text and HTML body from email message.
+
+        Args:
+            msg: Email message.
+
+        Returns:
+            Tuple of (plain_text_body, html_body).
+        """
+        body_text = ""
+        body_html = ""
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = part.get("Content-Disposition", "")
+
+                # Skip attachments
+                if "attachment" in content_disposition:
+                    continue
+
+                try:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        text = payload.decode(charset, errors="replace")
+
+                        if content_type == "text/plain" and not body_text:
+                            body_text = text
+                        elif content_type == "text/html" and not body_html:
+                            body_html = text
+                except Exception:
+                    continue
+        else:
+            # Single part message
+            try:
+                content_type = msg.get_content_type()
+                payload = msg.get_payload(decode=True)
+                if payload:
+                    charset = msg.get_content_charset() or "utf-8"
+                    text = payload.decode(charset, errors="replace")
+
+                    if content_type == "text/plain":
+                        body_text = text
+                    elif content_type == "text/html":
+                        body_html = text
+            except Exception:
+                pass
+
+        return body_text, body_html
+
+    def _get_attachment_info(self, msg: Message) -> list[EmailAttachmentInfo]:
+        """Get information about all attachments in an email.
+
+        Args:
+            msg: Email message.
+
+        Returns:
+            List of EmailAttachmentInfo objects.
+        """
+        attachments = []
+        index = 0
+
+        for part in msg.walk():
+            content_disposition = part.get("Content-Disposition", "")
+            if "attachment" not in content_disposition:
+                continue
+
+            filename = part.get_filename()
+            if not filename:
+                continue
+
+            filename = self._decode_header_value(filename)
+            content_type = part.get_content_type() or "application/octet-stream"
+
+            # Get size
+            payload = part.get_payload(decode=True)
+            size = len(payload) if payload else 0
+
+            attachments.append(
+                EmailAttachmentInfo(
+                    filename=filename,
+                    content_type=content_type,
+                    size=size,
+                    index=index,
+                )
+            )
+            index += 1
+
+        return attachments
+
+    def get_email_messages(
+        self,
+        email_filter: Optional[EmailFilter] = None,
+    ) -> list[EmailMessage]:
+        """Get email messages with body and attachment info.
+
+        Args:
+            email_filter: Filter criteria for searching emails.
+
+        Returns:
+            List of EmailMessage objects.
+        """
+        if email_filter is None:
+            email_filter = EmailFilter()
+
+        messages = self.search_emails(email_filter)
+        email_messages = []
+
+        for msg in messages:
+            sender = self._decode_header_value(msg.get("From", ""))
+            subject = self._decode_header_value(msg.get("Subject", ""))
+            email_date = self._get_email_date(msg)
+            message_id = msg.get("Message-ID", "")
+
+            body_text, body_html = self._extract_email_body(msg)
+            attachments = self._get_attachment_info(msg)
+
+            email_messages.append(
+                EmailMessage(
+                    message_id=message_id,
+                    provider=self.PROVIDER_ID,
+                    sender=sender,
+                    subject=subject,
+                    date=email_date,
+                    body_text=body_text,
+                    body_html=body_html,
+                    attachments=attachments,
+                    _raw_message=msg,
+                )
+            )
+
+        return email_messages
+
+    def download_attachment(
+        self,
+        email_message: EmailMessage,
+        attachment_index: int,
+        dest_dir: Optional[Path] = None,
+    ) -> Optional[DownloadedInvoice]:
+        """Download a specific attachment from an email.
+
+        Args:
+            email_message: The email message.
+            attachment_index: Index of the attachment to download.
+            dest_dir: Destination directory.
+
+        Returns:
+            DownloadedInvoice if successful, None otherwise.
+        """
+        if email_message._raw_message is None:
+            self.logger.error("Raw message not available for download.")
+            return None
+
+        if attachment_index < 0 or attachment_index >= len(email_message.attachments):
+            self.logger.error(f"Invalid attachment index: {attachment_index}")
+            return None
+
+        dest_dir = dest_dir or settings.faturas_dir
+
+        msg = email_message._raw_message
+        current_index = 0
+
+        for part in msg.walk():
+            content_disposition = part.get("Content-Disposition", "")
+            if "attachment" not in content_disposition:
+                continue
+
+            filename = part.get_filename()
+            if not filename:
+                continue
+
+            if current_index == attachment_index:
+                filename = self._decode_header_value(filename)
+                data = part.get_payload(decode=True)
+
+                if not data:
+                    return None
+
+                # Generate unique filename
+                date_prefix = email_message.date.strftime("%Y%m%d")
+                safe_filename = self._sanitize_filename(filename)
+                final_filename = f"{date_prefix}_{safe_filename}"
+
+                # Save file
+                file_path = dest_dir / final_filename
+
+                # Handle duplicates
+                counter = 1
+                base_path = file_path
+                while file_path.exists():
+                    stem = base_path.stem
+                    suffix = base_path.suffix
+                    file_path = base_path.parent / f"{stem}_{counter}{suffix}"
+                    counter += 1
+
+                file_path.write_bytes(data)
+                self.logger.info(f"Guardado anexo: {file_path.name}")
+
+                return DownloadedInvoice(
+                    provider=self.PROVIDER_ID,
+                    sender=email_message.sender,
+                    subject=email_message.subject,
+                    date=email_message.date,
+                    file_path=file_path,
+                    file_name=filename,
+                    file_size=len(data),
+                    email_body=email_message.body_text,
+                )
+
+            current_index += 1
+
+        return None
