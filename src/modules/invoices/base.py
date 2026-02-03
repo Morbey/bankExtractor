@@ -81,6 +81,40 @@ class EmailProviderBase(ABC):
         )
         return email, password
 
+    @staticmethod
+    def _mask_email(email: str) -> str:
+        """Mask email address for safe logging.
+
+        Args:
+            email: Full email address
+
+        Returns:
+            Masked email (e.g., 'us***@gm***.com')
+        """
+        if not email or "@" not in email:
+            return "***"
+
+        local, domain = email.rsplit("@", 1)
+        domain_parts = domain.split(".")
+
+        # Mask local part: show first 2 chars
+        if len(local) > 2:
+            masked_local = local[:2] + "***"
+        else:
+            masked_local = "***"
+
+        # Mask domain: show first 2 chars of domain name
+        if len(domain_parts) >= 2:
+            domain_name = domain_parts[0]
+            if len(domain_name) > 2:
+                masked_domain = domain_name[:2] + "***." + domain_parts[-1]
+            else:
+                masked_domain = "***." + domain_parts[-1]
+        else:
+            masked_domain = "***"
+
+        return f"{masked_local}@{masked_domain}"
+
     @abstractmethod
     def connect(self) -> bool:
         """Connect to the email server.
