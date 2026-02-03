@@ -20,6 +20,14 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from src.core.config import settings
+from src.core.classification_rules import (
+    ClassificationRulesEngine,
+    MatchSource,
+    MatchType,
+    RuleAction,
+    RuleCondition,
+    get_rules_engine,
+)
 from src.core.document_registry import (
     DocumentRecord,
     DocumentStatus,
@@ -69,6 +77,7 @@ class InvoiceProcessor:
     def __init__(self):
         """Initialize the invoice processor."""
         self.registry = get_document_registry()
+        self.rules_engine = get_rules_engine()
         self._pdf_parser = None
 
     @property
@@ -179,79 +188,183 @@ class InvoiceProcessor:
 
         console.print(Panel(pdf_table, border_style="green"))
 
+    def build_rule_data(
+        self,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str] = None,
+    ) -> dict:
+        """Build data dictionary for rule matching.
+
+        Args:
+            invoice: Downloaded invoice.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
+
+        Returns:
+            Dictionary with all matchable fields.
+        """
+        return {
+            MatchSource.SENDER_EMAIL.value: invoice.sender,
+            MatchSource.SUBJECT.value: invoice.subject,
+            MatchSource.BODY.value: email_body or "",
+            MatchSource.FILENAME.value: invoice.file_name,
+            MatchSource.PDF_CONTENT.value: pdf_info.get("raw_text", ""),
+            MatchSource.PDF_NIF.value: ",".join(pdf_info.get("nifs", [])),
+            MatchSource.PDF_VENDOR.value: pdf_info.get("vendor", ""),
+        }
+
     def find_entity_for_invoice(
         self,
         invoice: DownloadedInvoice,
         pdf_info: dict,
-    ) -> Optional[Entity]:
+        email_body: Optional[str] = None,
+    ) -> tuple[Optional[Entity], Optional[str]]:
         """Try to find a matching entity for the invoice.
 
         Args:
             invoice: Downloaded invoice.
             pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
 
         Returns:
-            Matching entity or None.
+            Tuple of (matching entity, match reason) or (None, None).
         """
-        # Try by sender email first (most reliable for recurring invoices)
+        # 1. Try classification rules first (most flexible)
+        rule_data = self.build_rule_data(invoice, pdf_info, email_body)
+        rule_match = self.rules_engine.get_best_match(rule_data)
+
+        if rule_match and rule_match.action == RuleAction.ASSIGN_ENTITY:
+            entity = self.registry.get_entity(rule_match.action_value)
+            if entity:
+                reason = f"Regra: {rule_match.rule.name}"
+                return entity, reason
+
+        # 2. Try by sender email (legacy method)
         entity = self.registry.find_entity(sender_email=invoice.sender)
         if entity:
-            return entity
+            return entity, f"Email remetente: {invoice.sender}"
 
-        # Try by NIF
+        # 3. Try by NIF
         for nif in pdf_info.get("nifs", []):
             entity = self.registry.find_entity(nif=nif)
             if entity:
-                return entity
+                return entity, f"NIF: {nif}"
 
-        # Try by vendor name
+        # 4. Try by vendor name
         vendor = pdf_info.get("vendor")
         if vendor:
             entity = self.registry.find_entity(name=vendor)
             if entity:
-                return entity
+                return entity, f"Fornecedor: {vendor}"
 
-        return None
+        return None, None
 
     def prompt_for_entity(
         self,
         invoice: DownloadedInvoice,
         pdf_info: dict,
+        email_body: Optional[str] = None,
     ) -> Optional[Entity]:
         """Prompt user to create or select an entity.
 
         Args:
             invoice: Downloaded invoice.
             pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
 
         Returns:
             Selected or created entity, or None to skip.
         """
-        console.print("\n[yellow]Entidade desconhecida![/yellow]")
-        console.print("Opções:")
-        console.print("  1. Criar nova entidade")
-        console.print("  2. Associar a entidade existente")
-        console.print("  3. Ignorar (deixar pendente)")
+        while True:
+            console.print("\n[yellow]Entidade desconhecida![/yellow]")
+            console.print("Opções:")
+            console.print("  1. Criar nova entidade (com regra)")
+            console.print("  2. Associar a entidade existente")
+            console.print("  3. Ver mais informação (body/PDF)")
+            console.print("  4. Ignorar (deixar pendente)")
 
-        choice = Prompt.ask("Escolha", choices=["1", "2", "3"], default="1")
+            choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4"], default="1")
 
-        if choice == "1":
-            return self._create_entity_interactive(invoice, pdf_info)
-        elif choice == "2":
-            return self._select_existing_entity(invoice)
-        else:
-            return None
+            if choice == "1":
+                return self._create_entity_with_rule(invoice, pdf_info, email_body)
+            elif choice == "2":
+                entity = self._select_existing_entity(invoice, pdf_info, email_body)
+                if entity:
+                    return entity
+                # If cancelled, show menu again
+            elif choice == "3":
+                self._show_extended_info(invoice, pdf_info, email_body)
+                # Show menu again after displaying info
+            else:
+                return None
 
-    def _create_entity_interactive(
+    def _show_extended_info(
         self,
         invoice: DownloadedInvoice,
         pdf_info: dict,
-    ) -> Optional[Entity]:
-        """Create a new entity interactively.
+        email_body: Optional[str] = None,
+    ) -> None:
+        """Show extended information for manual identification.
 
         Args:
             invoice: Downloaded invoice.
             pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
+        """
+        console.print("\n[bold cyan]Informação Adicional[/bold cyan]")
+
+        # Show email body if available
+        if email_body:
+            console.print("\n[bold]Body do Email:[/bold]")
+            # Show first 1000 chars
+            body_preview = email_body[:1000]
+            if len(email_body) > 1000:
+                body_preview += f"\n[dim]... ({len(email_body) - 1000} caracteres omitidos)[/dim]"
+            console.print(Panel(body_preview, border_style="blue"))
+        else:
+            console.print("[dim]Body do email não disponível[/dim]")
+
+        # Show PDF content preview
+        raw_text = pdf_info.get("raw_text", "")
+        if raw_text:
+            console.print("\n[bold]Conteúdo do PDF (primeiros 1500 chars):[/bold]")
+            pdf_preview = raw_text[:1500]
+            if len(raw_text) > 1500:
+                pdf_preview += f"\n[dim]... ({len(raw_text) - 1500} caracteres omitidos)[/dim]"
+            console.print(Panel(pdf_preview, border_style="green"))
+
+        # Ask if user wants to open the file
+        if Confirm.ask("\nAbrir o ficheiro PDF?", default=False):
+            self._open_file(invoice.file_path)
+
+    def _open_file(self, file_path: Path) -> None:
+        """Open a file with the system default application."""
+        import subprocess
+        import sys
+
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["start", "", str(file_path)], shell=True)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(file_path)])
+            else:
+                subprocess.run(["xdg-open", str(file_path)])
+        except Exception as e:
+            console.print(f"[red]Erro ao abrir ficheiro: {e}[/red]")
+
+    def _create_entity_with_rule(
+        self,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str] = None,
+    ) -> Optional[Entity]:
+        """Create a new entity with classification rule.
+
+        Args:
+            invoice: Downloaded invoice.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
 
         Returns:
             Created entity or None.
@@ -282,7 +395,7 @@ class InvoiceProcessor:
         except ValueError:
             entity_type = EntityType.EMPRESA
 
-        # Create entity with sender email for automatic matching
+        # Create entity
         entity = self.registry.create_entity(
             name=name,
             folder_name=folder_name,
@@ -292,18 +405,107 @@ class InvoiceProcessor:
         )
 
         console.print(f"[green]Entidade '{name}' criada![/green]")
-        console.print(f"[dim]Próximos emails de {invoice.sender} serão automaticamente associados.[/dim]")
+
+        # Ask about creating classification rule
+        console.print("\n[bold]Criar regra de classificação[/bold]")
+        console.print("Que critérios usar para identificar automaticamente futuras faturas?")
+
+        rule_conditions = []
+
+        # Option 1: Sender email (always suggested)
+        console.print(f"\n1. Email remetente: [cyan]{invoice.sender}[/cyan]")
+        if Confirm.ask("   Usar email do remetente?", default=True):
+            rule_conditions.append(RuleCondition(
+                source=MatchSource.SENDER_EMAIL,
+                match_type=MatchType.EXACT,
+                pattern=invoice.sender,
+            ))
+
+        # Option 2: NIF from PDF
+        nifs = pdf_info.get("nifs", [])
+        if nifs:
+            console.print(f"\n2. NIF no PDF: [cyan]{', '.join(nifs)}[/cyan]")
+            if Confirm.ask("   Usar NIF do PDF?", default=True):
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.PDF_NIF,
+                    match_type=MatchType.CONTAINS,
+                    pattern=nifs[0],
+                ))
+
+        # Option 3: Subject pattern
+        console.print(f"\n3. Assunto: [cyan]{invoice.subject}[/cyan]")
+        if Confirm.ask("   Usar padrão no assunto?", default=False):
+            subject_pattern = Prompt.ask("   Padrão a procurar no assunto", default=invoice.subject[:30])
+            if subject_pattern:
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.SUBJECT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=subject_pattern,
+                ))
+
+        # Option 4: PDF content pattern
+        vendor = pdf_info.get("vendor")
+        if vendor:
+            console.print(f"\n4. Texto no PDF: [cyan]{vendor}[/cyan]")
+            if Confirm.ask("   Usar padrão no conteúdo do PDF?", default=False):
+                pdf_pattern = Prompt.ask("   Padrão a procurar no PDF", default=vendor)
+                if pdf_pattern:
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.PDF_CONTENT,
+                        match_type=MatchType.CONTAINS,
+                        pattern=pdf_pattern,
+                    ))
+
+        # Option 5: Custom body pattern
+        if email_body:
+            if Confirm.ask("\n5. Usar padrão no body do email?", default=False):
+                body_pattern = Prompt.ask("   Padrão a procurar no body")
+                if body_pattern:
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.BODY,
+                        match_type=MatchType.CONTAINS,
+                        pattern=body_pattern,
+                    ))
+
+        # Create rule if conditions were selected
+        if rule_conditions:
+            rule_name = Prompt.ask("Nome da regra", default=f"Regra {name}")
+
+            # Determine if should be AND or OR
+            match_all = True
+            if len(rule_conditions) > 1:
+                console.print("\nComo combinar as condições?")
+                console.print("  1. AND - Todas têm de corresponder")
+                console.print("  2. OR - Basta uma corresponder")
+                combo = Prompt.ask("Escolha", choices=["1", "2"], default="1")
+                match_all = combo == "1"
+
+            rule = self.rules_engine.create_rule(
+                name=rule_name,
+                conditions=rule_conditions,
+                action=RuleAction.ASSIGN_ENTITY,
+                action_value=entity.id,
+                description=f"Auto-criada para {name}",
+                match_all=match_all,
+            )
+            console.print(f"[green]Regra '{rule_name}' criada com {len(rule_conditions)} condição(ões)![/green]")
+        else:
+            console.print("[dim]Nenhuma regra criada. Emails do remetente serão associados automaticamente.[/dim]")
 
         return entity
 
     def _select_existing_entity(
         self,
         invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str] = None,
     ) -> Optional[Entity]:
-        """Select an existing entity and add sender mapping.
+        """Select an existing entity and optionally create a rule.
 
         Args:
             invoice: Downloaded invoice.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
 
         Returns:
             Selected entity or None.
@@ -318,20 +520,96 @@ class InvoiceProcessor:
         for i, entity in enumerate(entities, 1):
             console.print(f"  {i}. {entity.name} ({entity.folder_name})")
 
-        choice = Prompt.ask("Número da entidade (0 para cancelar)", default="0")
+        choice = Prompt.ask("Número da entidade (0 para voltar)", default="0")
         try:
             idx = int(choice)
             if 1 <= idx <= len(entities):
                 entity = entities[idx - 1]
-                # Add sender email for future automatic matching
-                self.registry.add_sender_email_to_entity(entity.id, invoice.sender)
-                console.print(f"[green]Associado a '{entity.name}'[/green]")
-                console.print(f"[dim]Próximos emails de {invoice.sender} serão automaticamente associados.[/dim]")
+
+                # Ask how to create the mapping
+                console.print(f"\n[green]Associar a '{entity.name}'[/green]")
+                console.print("Como identificar futuras faturas desta entidade?")
+                console.print("  1. Apenas por email do remetente (simples)")
+                console.print("  2. Criar regra com múltiplos critérios (avançado)")
+
+                rule_choice = Prompt.ask("Escolha", choices=["1", "2"], default="1")
+
+                if rule_choice == "1":
+                    # Simple: just add sender email
+                    self.registry.add_sender_email_to_entity(entity.id, invoice.sender)
+                    console.print(f"[dim]Emails de {invoice.sender} → {entity.name}[/dim]")
+                else:
+                    # Advanced: create rule
+                    self._create_rule_for_entity(entity, invoice, pdf_info, email_body)
+
                 return entity
         except ValueError:
             pass
 
         return None
+
+    def _create_rule_for_entity(
+        self,
+        entity: Entity,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str] = None,
+    ) -> None:
+        """Create a classification rule for an existing entity.
+
+        Args:
+            entity: Entity to create rule for.
+            invoice: Current invoice for pattern suggestions.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body.
+        """
+        console.print(f"\n[bold]Criar regra para '{entity.name}'[/bold]")
+
+        rule_conditions = []
+
+        # Offer various conditions
+        console.print(f"\n1. Email: [cyan]{invoice.sender}[/cyan]")
+        if Confirm.ask("   Incluir?", default=True):
+            rule_conditions.append(RuleCondition(
+                source=MatchSource.SENDER_EMAIL,
+                match_type=MatchType.EXACT,
+                pattern=invoice.sender,
+            ))
+
+        nifs = pdf_info.get("nifs", [])
+        if nifs:
+            console.print(f"\n2. NIF: [cyan]{nifs[0]}[/cyan]")
+            if Confirm.ask("   Incluir?", default=False):
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.PDF_NIF,
+                    match_type=MatchType.CONTAINS,
+                    pattern=nifs[0],
+                ))
+
+        console.print(f"\n3. Assunto: [cyan]{invoice.subject[:50]}[/cyan]")
+        if Confirm.ask("   Incluir padrão do assunto?", default=False):
+            pattern = Prompt.ask("   Padrão", default=invoice.subject[:30])
+            if pattern:
+                rule_conditions.append(RuleCondition(
+                    source=MatchSource.SUBJECT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=pattern,
+                ))
+
+        if rule_conditions:
+            rule_name = Prompt.ask("Nome da regra", default=f"Regra {entity.name}")
+            self.rules_engine.create_rule(
+                name=rule_name,
+                conditions=rule_conditions,
+                action=RuleAction.ASSIGN_ENTITY,
+                action_value=entity.id,
+                match_all=len(rule_conditions) == 1,
+            )
+            console.print(f"[green]Regra criada![/green]")
+        else:
+            # Fallback to sender email mapping
+            self.registry.add_sender_email_to_entity(entity.id, invoice.sender)
+            console.print(f"[dim]Usando mapeamento simples por email[/dim]")
 
     def organize_invoice(
         self,
@@ -413,12 +691,12 @@ class InvoiceProcessor:
             pdf_info = self.extract_pdf_info(invoice.file_path)
 
             # Try to find matching entity
-            entity = self.find_entity_for_invoice(invoice, pdf_info)
+            entity, match_reason = self.find_entity_for_invoice(invoice, pdf_info)
 
             if entity:
                 # Known entity - organize automatically
                 console.print(f"\n[green]✓[/green] {invoice.file_name}")
-                console.print(f"  [dim]Entidade conhecida: {entity.name}[/dim]")
+                console.print(f"  [dim]{match_reason} → {entity.name}[/dim]")
 
             elif interactive:
                 # Show summary and prompt

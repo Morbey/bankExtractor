@@ -20,6 +20,7 @@ from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer, DocumentPro
 from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader
 from src.modules.organizer import DocumentIndexer, DocumentType
 from src.core.document_registry import get_document_registry, EntityType
+from src.core.classification_rules import get_rules_engine, MatchSource, MatchType, RuleAction
 from src.modules.reporter import (
     ConsoleFormatter,
     ReportConfig,
@@ -1271,6 +1272,182 @@ def entidades(
     else:
         console.print(f"[red]Ação desconhecida: {acao}[/red]")
         console.print("Ações disponíveis: listar, criar, ver, editar")
+        raise typer.Exit(1)
+
+
+@app.command()
+def regras(
+    acao: str = typer.Argument(
+        "listar",
+        help="Ação: listar, ver, eliminar, activar, desactivar",
+    ),
+    rule_id: Optional[str] = typer.Option(
+        None,
+        "--id",
+        help="ID da regra (para ver/eliminar/activar/desactivar)",
+    ),
+):
+    """Gerir regras de classificação automática."""
+    console.print(Panel.fit(
+        f"[bold magenta]Bank Extractor v{__version__}[/bold magenta]\n"
+        "Regras de Classificação",
+        border_style="magenta",
+    ))
+
+    rules_engine = get_rules_engine()
+    acao_lower = acao.lower()
+
+    if acao_lower == "listar":
+        rules = rules_engine.get_all_rules()
+
+        if not rules:
+            console.print("\n[yellow]Nenhuma regra de classificação definida.[/yellow]")
+            console.print("[dim]As regras são criadas automaticamente ao identificar entidades.[/dim]")
+            return
+
+        table = Table(title=f"Regras de Classificação ({len(rules)})")
+        table.add_column("Pri", style="dim", width=4)
+        table.add_column("ID", style="dim", width=10)
+        table.add_column("Nome", style="cyan", max_width=25)
+        table.add_column("Condições", style="white", max_width=40)
+        table.add_column("Acção", style="green")
+        table.add_column("Hits", style="yellow", justify="right")
+        table.add_column("On", style="dim", width=3)
+
+        for rule in rules:
+            # Build conditions summary
+            cond_summary = []
+            for c in rule.conditions[:2]:  # Show first 2
+                source = c.source.value.split("_")[0]
+                pattern_short = c.pattern[:15] + "..." if len(c.pattern) > 15 else c.pattern
+                cond_summary.append(f"{source}:{pattern_short}")
+            if len(rule.conditions) > 2:
+                cond_summary.append(f"+{len(rule.conditions) - 2}")
+
+            connector = " AND " if rule.match_all else " OR "
+
+            table.add_row(
+                str(rule.priority),
+                rule.id[:10],
+                rule.name[:25],
+                connector.join(cond_summary),
+                rule.action.value[:15],
+                str(rule.hit_count),
+                "✓" if rule.enabled else "✗",
+            )
+
+        console.print(table)
+        console.print("\n[dim]Use: bank-extractor regras ver --id <ID> para ver detalhes[/dim]")
+
+    elif acao_lower == "ver":
+        if not rule_id:
+            console.print("[red]ID é obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        rule = rules_engine.get_rule(rule_id)
+        if not rule:
+            # Try partial match
+            rules = rules_engine.get_all_rules()
+            for r in rules:
+                if r.id.startswith(rule_id):
+                    rule = r
+                    break
+
+        if not rule:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold]Regra: {rule.name}[/bold]")
+
+        info_table = Table(show_header=False)
+        info_table.add_column("Campo", style="cyan")
+        info_table.add_column("Valor", style="white")
+
+        info_table.add_row("ID", rule.id)
+        info_table.add_row("Nome", rule.name)
+        info_table.add_row("Descrição", rule.description or "-")
+        info_table.add_row("Prioridade", str(rule.priority))
+        info_table.add_row("Activada", "Sim" if rule.enabled else "Não")
+        info_table.add_row("Lógica", "AND (todas)" if rule.match_all else "OR (qualquer uma)")
+        info_table.add_row("Hits", str(rule.hit_count))
+        info_table.add_row("Criada em", rule.created_at[:19] if rule.created_at else "-")
+        info_table.add_row("Acção", rule.action.value)
+        info_table.add_row("Valor Acção", rule.action_value[:30])
+
+        console.print(info_table)
+
+        # Show conditions
+        console.print(f"\n[bold]Condições ({len(rule.conditions)}):[/bold]")
+        cond_table = Table()
+        cond_table.add_column("#", style="dim")
+        cond_table.add_column("Fonte", style="cyan")
+        cond_table.add_column("Tipo", style="yellow")
+        cond_table.add_column("Padrão", style="white")
+
+        for i, cond in enumerate(rule.conditions, 1):
+            cond_table.add_row(
+                str(i),
+                cond.source.value,
+                cond.match_type.value,
+                cond.pattern[:50] + "..." if len(cond.pattern) > 50 else cond.pattern,
+            )
+
+        console.print(cond_table)
+
+        # Show action details
+        if rule.action == RuleAction.ASSIGN_ENTITY:
+            registry = get_document_registry()
+            entity = registry.get_entity(rule.action_value)
+            if entity:
+                console.print(f"\n[green]→ Associa à entidade: {entity.name}[/green]")
+
+    elif acao_lower == "eliminar":
+        if not rule_id:
+            console.print("[red]ID é obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        rule = rules_engine.get_rule(rule_id)
+        if not rule:
+            # Try partial match
+            rules = rules_engine.get_all_rules()
+            for r in rules:
+                if r.id.startswith(rule_id):
+                    rule = r
+                    break
+
+        if not rule:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+            raise typer.Exit(1)
+
+        if Confirm.ask(f"Eliminar regra '{rule.name}'?"):
+            rules_engine.delete_rule(rule.id)
+            console.print("[green]Regra eliminada.[/green]")
+        else:
+            console.print("[dim]Cancelado.[/dim]")
+
+    elif acao_lower == "activar":
+        if not rule_id:
+            console.print("[red]ID é obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        if rules_engine.enable_rule(rule_id, True):
+            console.print("[green]Regra activada.[/green]")
+        else:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+
+    elif acao_lower == "desactivar":
+        if not rule_id:
+            console.print("[red]ID é obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        if rules_engine.enable_rule(rule_id, False):
+            console.print("[yellow]Regra desactivada.[/yellow]")
+        else:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+
+    else:
+        console.print(f"[red]Ação desconhecida: {acao}[/red]")
+        console.print("Ações disponíveis: listar, ver, eliminar, activar, desactivar")
         raise typer.Exit(1)
 
 
