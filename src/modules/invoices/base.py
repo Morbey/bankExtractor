@@ -5,9 +5,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from email.message import Message
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from src.core import CredentialManager, get_logger, settings
+
+
+# Type alias for progress callback: (stage, current, total, message)
+ProgressCallback = Callable[[str, int, int, str], None]
 
 
 @dataclass
@@ -145,11 +149,17 @@ class EmailProviderBase(ABC):
         pass
 
     @abstractmethod
-    def search_emails(self, email_filter: EmailFilter) -> list[Message]:
+    def search_emails(
+        self,
+        email_filter: EmailFilter,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> list[Message]:
         """Search for emails matching the filter criteria.
 
         Args:
             email_filter: Filter criteria for searching emails
+            progress_callback: Optional callback for progress updates.
+                              Called with (stage, current, total, message)
 
         Returns:
             List of email messages matching the criteria.
@@ -176,11 +186,15 @@ class EmailProviderBase(ABC):
     def run(
         self,
         email_filter: Optional[EmailFilter] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> list[DownloadedInvoice]:
         """Execute full invoice download workflow.
 
         Args:
             email_filter: Filter criteria for emails. If None, uses default filter.
+            progress_callback: Optional callback for progress updates.
+                              Called with (stage, current, total, message)
+                              Stages: "connect", "search", "fetch", "download"
 
         Returns:
             List of downloaded invoices.
@@ -190,16 +204,29 @@ class EmailProviderBase(ABC):
 
         self.logger.info(f"Iniciando download de faturas via {self.PROVIDER_NAME}...")
 
+        if progress_callback:
+            progress_callback("connect", 0, 1, "A ligar ao servidor...")
+
         if not self.connect():
             self.logger.error("Falha na ligação ao servidor de email.")
             return []
 
+        if progress_callback:
+            progress_callback("connect", 1, 1, "Ligado com sucesso")
+
         try:
-            messages = self.search_emails(email_filter)
+            messages = self.search_emails(email_filter, progress_callback)
             self.logger.info(f"Encontrados {len(messages)} emails com faturas.")
 
+            if progress_callback:
+                progress_callback("download", 0, len(messages), f"A processar {len(messages)} emails...")
+
             all_invoices = []
-            for msg in messages:
+            for i, msg in enumerate(messages):
+                if progress_callback:
+                    subject = msg.get("Subject", "")[:40]
+                    progress_callback("download", i + 1, len(messages), f"A processar: {subject}...")
+
                 invoices = self.download_attachments(msg, email_filter.attachment_extensions)
                 all_invoices.extend(invoices)
 

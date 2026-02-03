@@ -60,10 +60,21 @@ bankExtractor/
 │   │       ├── analyzer.py      # Trends and alerts
 │   │       └── tracker.py       # Main tracker interface
 │   └── cli/
-│       └── main.py              # Entry point with all commands
+│       ├── main.py              # Entry point (~100 lines)
+│       ├── common.py            # Shared utilities (console, parse_date)
+│       └── commands/            # Command modules by domain
+│           ├── banks.py         # extrair
+│           ├── invoices.py      # faturas, gerir_faturas, faturas_limpar
+│           ├── config.py        # config, credenciais, versao
+│           ├── documents.py     # organizar, pesquisar, documento
+│           ├── processing.py    # processar, pendentes, entidades, regras
+│           ├── reports.py       # relatorio, relatorio_anual, enviar
+│           └── expenses.py      # despesas, orcamento, alertas, tendencias
 ├── data/
 │   ├── extratos/                # Downloaded bank statements
-│   ├── faturas/                 # Organized invoices (by year/category/entity)
+│   ├── faturas/                 # Organized invoices
+│   │   ├── _pendentes/          # Temp folder for downloaded invoices (pre-organization)
+│   │   └── <year>/<scope>/<entity>/  # Final organized location
 │   ├── pagamentos/              # Outgoing payments (comprovativos)
 │   ├── recebimentos/            # Incoming payments (comprovativos)
 │   ├── catalogo/                # Document index (SQLite)
@@ -96,8 +107,16 @@ bank-extractor extrair cgd|ctt|todos [--inicio DD-MM-YYYY] [--fim DD-MM-YYYY]
 ### Invoice Download (Phase 2)
 ```bash
 bank-extractor faturas [gmail|hotmail|todos] [--dias N] [--conta NAME] [--config]
+bank-extractor faturas [--excluir gmail] [--selecionar] [--paralelo]
 bank-extractor faturas-limpar <provider> [--conta NAME]
 ```
+
+Options:
+- `--excluir/-e`: Exclude specific providers (can use multiple times)
+- `--selecionar/-s`: Interactive mode to choose which accounts to use
+- `--paralelo/-p`: Process invoices while download continues (streaming mode)
+
+Downloaded invoices go to `data/faturas/_pendentes/` first, then are moved to final location when organized.
 
 ### Document Organization (Phase 3)
 ```bash
@@ -241,6 +260,7 @@ Copy `.env.example` to `.env` and configure:
 - `PROJECT_VISION.md` - Detailed project vision and roadmap
 - `CODE_VALIDATOR_AGENT.md` - Code validation agent persona and guidelines
 - `README.md` - User guide and command reference
+- `TROUBLESHOOTING.md` - Common issues and solutions
 
 ## Important Notes
 

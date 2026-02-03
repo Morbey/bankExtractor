@@ -39,6 +39,13 @@ class Settings(BaseSettings):
         return path
 
     @property
+    def faturas_temp_dir(self) -> Path:
+        """Temporary folder for downloaded invoices pending organization."""
+        path = self.data_dir / "faturas" / "_pendentes"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
     def database_path(self) -> Path:
         return self.data_dir / "database.sqlite"
 

@@ -1,11 +1,19 @@
 """Invoice downloader - orchestrates downloads from multiple email providers."""
 
+import threading
 from datetime import date
-from typing import Optional
+from queue import Queue
+from typing import Callable, Iterator, Optional
 
 from src.core import get_logger
 
-from .base import COMMON_INVOICE_SENDERS, DownloadedInvoice, EmailFilter, EmailProviderBase
+from .base import (
+    COMMON_INVOICE_SENDERS,
+    DownloadedInvoice,
+    EmailFilter,
+    EmailProviderBase,
+    ProgressCallback,
+)
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
 
@@ -15,6 +23,12 @@ EMAIL_PROVIDERS: dict[str, type[EmailProviderBase]] = {
     "gmail": GmailProvider,
     "hotmail": HotmailProvider,
 }
+
+# Type alias for invoice callback
+InvoiceCallback = Callable[[DownloadedInvoice], None]
+
+# Sentinel to signal end of queue
+_DOWNLOAD_COMPLETE = object()
 
 
 class InvoiceDownloader:
@@ -46,6 +60,7 @@ class InvoiceDownloader:
         provider_id: str,
         email_filter: Optional[EmailFilter] = None,
         account: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> list[DownloadedInvoice]:
         """Download invoices from a specific email provider.
 
@@ -54,6 +69,8 @@ class InvoiceDownloader:
             email_filter: Optional filter criteria. If None, uses default filter
                          with common invoice senders.
             account: Optional account name for multiple accounts (e.g., 'pessoal', 'empresa')
+            progress_callback: Optional callback for progress updates.
+                              Called with (stage, current, total, message)
 
         Returns:
             List of downloaded invoices
@@ -75,7 +92,7 @@ class InvoiceDownloader:
         self.logger.info(f"A iniciar download de faturas via {account_display}...")
 
         with provider_class(account=account) as provider:
-            return provider.run(email_filter)
+            return provider.run(email_filter, progress_callback)
 
     def download_all(
         self,
@@ -199,3 +216,158 @@ class InvoiceDownloader:
             return self.download_from(provider_id, email_filter)
         else:
             return self.download_all(email_filter)
+
+    def download_streaming(
+        self,
+        provider_id: str,
+        email_filter: Optional[EmailFilter] = None,
+        account: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> tuple[Queue, threading.Thread]:
+        """Download invoices with streaming - returns queue that receives invoices as downloaded.
+
+        This allows processing invoices while download is still in progress.
+
+        Args:
+            provider_id: Email provider identifier (gmail, hotmail)
+            email_filter: Optional filter criteria
+            account: Optional account name
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Tuple of (invoice_queue, download_thread).
+            Queue receives DownloadedInvoice objects, then _DOWNLOAD_COMPLETE sentinel when done.
+            Thread can be joined to wait for completion.
+
+        Example:
+            queue, thread = downloader.download_streaming("gmail", filter)
+
+            while True:
+                item = queue.get()
+                if item is _DOWNLOAD_COMPLETE:
+                    break
+                # Process invoice
+                process(item)
+
+            thread.join()  # Ensure thread is cleaned up
+        """
+        invoice_queue: Queue = Queue()
+
+        def download_worker():
+            try:
+                if provider_id not in EMAIL_PROVIDERS:
+                    self.logger.error(f"Provider desconhecido: {provider_id}")
+                    return
+
+                provider_class = EMAIL_PROVIDERS[provider_id]
+                filter_to_use = email_filter or EmailFilter(senders=COMMON_INVOICE_SENDERS)
+
+                with provider_class(account=account) as provider:
+                    # Connect
+                    if progress_callback:
+                        progress_callback("connect", 0, 1, "A ligar ao servidor...")
+
+                    if not provider.connect():
+                        self.logger.error("Falha na ligação ao servidor de email.")
+                        return
+
+                    if progress_callback:
+                        progress_callback("connect", 1, 1, "Ligado com sucesso")
+
+                    # Search emails
+                    messages = provider.search_emails(filter_to_use, progress_callback)
+                    self.logger.info(f"Encontrados {len(messages)} emails com faturas.")
+
+                    if progress_callback:
+                        progress_callback("download", 0, len(messages), f"A processar {len(messages)} emails...")
+
+                    # Download and stream each invoice
+                    for i, msg in enumerate(messages):
+                        if progress_callback:
+                            subject = msg.get("Subject", "")[:40]
+                            progress_callback("download", i + 1, len(messages), f"A processar: {subject}...")
+
+                        invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
+
+                        # Put each invoice in queue immediately
+                        for invoice in invoices:
+                            invoice_queue.put(invoice)
+
+                    self.logger.info("Download concluído.")
+
+            except Exception as e:
+                self.logger.error(f"Erro no download: {e}")
+            finally:
+                # Signal completion
+                invoice_queue.put(_DOWNLOAD_COMPLETE)
+
+        thread = threading.Thread(target=download_worker, daemon=True)
+        thread.start()
+
+        return invoice_queue, thread
+
+    def download_streaming_multi(
+        self,
+        providers: list[str],
+        email_filter: Optional[EmailFilter] = None,
+        account: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> tuple[Queue, threading.Thread]:
+        """Download from multiple providers with streaming.
+
+        Args:
+            providers: List of provider IDs
+            email_filter: Optional filter criteria
+            account: Optional account name
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Tuple of (invoice_queue, download_thread)
+        """
+        invoice_queue: Queue = Queue()
+
+        def download_worker():
+            try:
+                filter_to_use = email_filter or EmailFilter(senders=COMMON_INVOICE_SENDERS)
+
+                for provider_id in providers:
+                    if provider_id not in EMAIL_PROVIDERS:
+                        self.logger.error(f"Provider desconhecido: {provider_id}")
+                        continue
+
+                    provider_class = EMAIL_PROVIDERS[provider_id]
+
+                    try:
+                        with provider_class(account=account) as provider:
+                            if progress_callback:
+                                progress_callback("connect", 0, 1, f"A ligar a {provider_id}...")
+
+                            if not provider.connect():
+                                self.logger.error(f"Falha na ligação a {provider_id}.")
+                                continue
+
+                            if progress_callback:
+                                progress_callback("connect", 1, 1, f"Ligado a {provider_id}")
+
+                            messages = provider.search_emails(filter_to_use, progress_callback)
+
+                            for i, msg in enumerate(messages):
+                                if progress_callback:
+                                    subject = msg.get("Subject", "")[:40]
+                                    progress_callback("download", i + 1, len(messages), f"{provider_id}: {subject}...")
+
+                                invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
+                                for invoice in invoices:
+                                    invoice_queue.put(invoice)
+
+                    except Exception as e:
+                        self.logger.error(f"Erro em {provider_id}: {e}")
+                        continue
+
+            finally:
+                invoice_queue.put(_DOWNLOAD_COMPLETE)
+
+        thread = threading.Thread(target=download_worker, daemon=True)
+        thread.start()
+
+        return invoice_queue, thread

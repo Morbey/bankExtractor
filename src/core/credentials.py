@@ -61,6 +61,19 @@ class CredentialManager:
             pass  # Credential didn't exist
 
     @classmethod
+    def has_credential(cls, bank: str, field: str) -> bool:
+        """Check if a credential exists in the system keyring.
+
+        Args:
+            bank: Bank identifier
+            field: Field name
+
+        Returns:
+            True if the credential exists, False otherwise.
+        """
+        return cls.get_credential(bank, field) is not None
+
+    @classmethod
     def get_or_prompt(cls, bank: str, field: str, prompt_text: str, password: bool = False) -> str:
         """Get credential from keyring or prompt user.
 

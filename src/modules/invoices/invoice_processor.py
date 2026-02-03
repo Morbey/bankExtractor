@@ -44,6 +44,14 @@ console = Console()
 logger = get_logger(__name__)
 
 
+class _DeleteMarker:
+    """Marker to indicate file should be deleted/ignored permanently."""
+    pass
+
+
+DELETE_FILE = _DeleteMarker()
+
+
 @dataclass
 class ProcessedInvoice:
     """Result of processing an invoice."""
@@ -109,7 +117,7 @@ class InvoiceProcessor:
         try:
             metadata = self.pdf_parser.parse(file_path)
             info["raw_text"] = metadata.raw_text or ""
-            info["vendor"] = metadata.vendor
+            info["vendor"] = metadata.vendor_name
 
             if metadata.total_amount:
                 info["amount"] = f"{metadata.total_amount:.2f} EUR"
@@ -275,7 +283,7 @@ class InvoiceProcessor:
             email_body: Optional email body content.
 
         Returns:
-            Selected or created entity, or None to skip.
+            Selected or created entity, None to skip (pending), or DELETE_FILE marker.
         """
         while True:
             console.print("\n[yellow]Entidade desconhecida![/yellow]")
@@ -284,8 +292,9 @@ class InvoiceProcessor:
             console.print("  2. Associar a entidade existente")
             console.print("  3. Ver mais informação (body/PDF)")
             console.print("  4. Ignorar (deixar pendente)")
+            console.print("  5. [red]Eliminar ficheiro (ignorar permanentemente)[/red]")
 
-            choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4"], default="1")
+            choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4", "5"], default="1")
 
             if choice == "1":
                 return self._create_entity_with_rule(invoice, pdf_info, email_body)
@@ -297,8 +306,16 @@ class InvoiceProcessor:
             elif choice == "3":
                 self._show_extended_info(invoice, pdf_info, email_body)
                 # Show menu again after displaying info
-            else:
+            elif choice == "4":
                 return None
+            elif choice == "5":
+                # Confirm deletion
+                if Confirm.ask(
+                    f"[red]Tem a certeza que quer eliminar '{invoice.file_name}'?[/red]",
+                    default=False,
+                ):
+                    return DELETE_FILE
+                # If not confirmed, show menu again
 
     def _show_extended_info(
         self,
@@ -661,6 +678,7 @@ class InvoiceProcessor:
             entity: Entity to organize under.
             pdf_info: Extracted PDF info.
             move: If True, move file instead of copy.
+                  Note: Files in temp folder are always moved regardless of this flag.
 
         Returns:
             Destination path.
@@ -698,8 +716,13 @@ class InvoiceProcessor:
             dest_path = dest_folder / f"{date_prefix}{stem}_{counter}{suffix}"
             counter += 1
 
-        # Move or copy
-        if move:
+        # Always move files from temp folder to clean it up
+        # Otherwise respect the move parameter
+        is_in_temp = settings.faturas_temp_dir in invoice.file_path.parents or \
+                     invoice.file_path.parent == settings.faturas_temp_dir
+        should_move = move or is_in_temp
+
+        if should_move:
             shutil.move(str(invoice.file_path), str(dest_path))
         else:
             shutil.copy2(str(invoice.file_path), str(dest_path))
@@ -742,6 +765,25 @@ class InvoiceProcessor:
                 console.print(f"\n[yellow]?[/yellow] {invoice.file_name}")
                 self.show_invoice_summary(invoice, pdf_info)
                 entity = self.prompt_for_entity(invoice, pdf_info, email_body)
+
+            # Check if user chose to delete the file
+            if isinstance(entity, _DeleteMarker):
+                # Delete the file permanently
+                try:
+                    invoice.file_path.unlink()
+                    console.print(f"  [red]✗[/red] Ficheiro eliminado: {invoice.file_name}")
+                    return ProcessedInvoice(
+                        original=invoice,
+                        success=True,  # Treated as success since user chose this action
+                        error="Ficheiro eliminado pelo utilizador",
+                    )
+                except Exception as e:
+                    console.print(f"  [red]Erro ao eliminar ficheiro: {e}[/red]")
+                    return ProcessedInvoice(
+                        original=invoice,
+                        success=False,
+                        error=f"Erro ao eliminar: {e}",
+                    )
 
             if entity:
                 # Organize the file
@@ -826,11 +868,14 @@ class InvoiceProcessor:
             results.append(result)
 
         # Summary
-        successful = sum(1 for r in results if r.success)
+        organized = sum(1 for r in results if r.success and r.destination_path)
+        deleted = sum(1 for r in results if r.success and r.error and "eliminado" in r.error.lower())
         pending = sum(1 for r in results if not r.success)
 
         console.print(f"\n[bold]Resumo:[/bold]")
-        console.print(f"  [green]Organizadas: {successful}[/green]")
+        console.print(f"  [green]Organizadas: {organized}[/green]")
+        if deleted > 0:
+            console.print(f"  [red]Eliminadas: {deleted}[/red]")
         if pending > 0:
             console.print(f"  [yellow]Pendentes: {pending}[/yellow]")
             console.print(f"  [dim]Use 'bank-extractor pendentes' para ver pendentes[/dim]")

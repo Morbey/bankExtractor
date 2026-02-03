@@ -10,7 +10,7 @@ from typing import Optional
 
 from src.core import settings
 
-from .base import DownloadedInvoice, EmailFilter, EmailProviderBase
+from .base import DownloadedInvoice, EmailFilter, EmailProviderBase, ProgressCallback
 
 
 class HotmailProvider(EmailProviderBase):
@@ -138,11 +138,16 @@ class HotmailProvider(EmailProviderBase):
                 pass
         return datetime.now()
 
-    def search_emails(self, email_filter: EmailFilter) -> list[Message]:
+    def search_emails(
+        self,
+        email_filter: EmailFilter,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> list[Message]:
         """Search for emails matching the filter criteria.
 
         Args:
             email_filter: Filter criteria
+            progress_callback: Optional callback for progress updates
 
         Returns:
             List of email messages matching the criteria
@@ -164,13 +169,24 @@ class HotmailProvider(EmailProviderBase):
 
         # If we have sender filters, search for each sender
         senders = email_filter.senders if email_filter.senders else [None]
+        total_senders = len(senders)
 
-        for sender in senders:
+        for sender_idx, sender in enumerate(senders):
             try:
                 if sender:
                     search_criteria = f'{base_criteria} FROM "{sender}"'
+                    sender_display = sender.split("@")[0] if "@" in sender else sender
                 else:
                     search_criteria = base_criteria
+                    sender_display = "todos"
+
+                if progress_callback:
+                    progress_callback(
+                        "search",
+                        sender_idx + 1,
+                        total_senders,
+                        f"A pesquisar: {sender_display}..."
+                    )
 
                 self.logger.debug(f"Critério de pesquisa: {search_criteria}")
 
@@ -181,10 +197,29 @@ class HotmailProvider(EmailProviderBase):
                     continue
 
                 msg_id_list = msg_ids[0].split()
-                self.logger.debug(f"Encontrados {len(msg_id_list)} emails de {sender or 'todos'}")
+                num_found = len(msg_id_list)
+
+                if num_found > 0:
+                    self.logger.debug(f"Encontrados {num_found} emails de {sender or 'todos'}")
+
+                    if progress_callback:
+                        progress_callback(
+                            "fetch",
+                            0,
+                            num_found,
+                            f"A obter {num_found} emails de {sender_display}..."
+                        )
 
                 # Fetch each message
-                for msg_id in msg_id_list:
+                for fetch_idx, msg_id in enumerate(msg_id_list):
+                    if progress_callback and num_found > 0:
+                        progress_callback(
+                            "fetch",
+                            fetch_idx + 1,
+                            num_found,
+                            f"A obter email {fetch_idx + 1}/{num_found} de {sender_display}..."
+                        )
+
                     status, msg_data = self._imap.fetch(msg_id, "(RFC822)")
                     if status == "OK" and msg_data[0]:
                         raw_email = msg_data[0][1]
@@ -313,38 +348,48 @@ class HotmailProvider(EmailProviderBase):
             if not data:
                 continue
 
-            # Generate unique filename
-            date_prefix = email_date.strftime("%Y%m%d")
-            safe_filename = self._sanitize_filename(filename)
-            final_filename = f"{date_prefix}_{safe_filename}"
+            try:
+                # Generate unique filename
+                date_prefix = email_date.strftime("%Y%m%d")
+                safe_filename = self._sanitize_filename(filename)
+                final_filename = f"{date_prefix}_{safe_filename}"
 
-            # Save file
-            file_path = settings.faturas_dir / final_filename
+                # Ensure we have a valid filename
+                if not final_filename or not safe_filename:
+                    self.logger.warning(f"Nome de ficheiro inválido ignorado: {filename[:50]}...")
+                    continue
 
-            # Handle duplicates
-            counter = 1
-            base_path = file_path
-            while file_path.exists():
-                stem = base_path.stem
-                suffix = base_path.suffix
-                file_path = base_path.parent / f"{stem}_{counter}{suffix}"
-                counter += 1
+                # Save file to temp folder (pending organization)
+                file_path = settings.faturas_temp_dir / final_filename
 
-            file_path.write_bytes(data)
-            self.logger.info(f"Guardada fatura: {file_path.name}")
+                # Handle duplicates
+                counter = 1
+                base_path = file_path
+                while file_path.exists():
+                    stem = base_path.stem
+                    suffix = base_path.suffix
+                    file_path = base_path.parent / f"{stem}_{counter}{suffix}"
+                    counter += 1
 
-            invoices.append(
-                DownloadedInvoice(
-                    provider=self.PROVIDER_ID,
-                    sender=sender,
-                    subject=subject,
-                    date=email_date,
-                    file_path=file_path,
-                    file_name=filename,
-                    file_size=len(data),
-                    email_body=email_body,
+                file_path.write_bytes(data)
+                self.logger.info(f"Guardada fatura: {file_path.name}")
+
+                invoices.append(
+                    DownloadedInvoice(
+                        provider=self.PROVIDER_ID,
+                        sender=sender,
+                        subject=subject,
+                        date=email_date,
+                        file_path=file_path,
+                        file_name=filename,
+                        file_size=len(data),
+                        email_body=email_body,
+                    )
                 )
-            )
+
+            except Exception as e:
+                self.logger.warning(f"Erro ao guardar anexo '{filename[:50]}...': {e}")
+                continue
 
         return invoices
 
@@ -357,10 +402,25 @@ class HotmailProvider(EmailProviderBase):
         Returns:
             Sanitized filename
         """
-        # Replace problematic characters
+        # Remove newlines and carriage returns first
+        filename = filename.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+
+        # Remove control characters (ASCII 0-31)
+        filename = "".join(c if ord(c) >= 32 else "_" for c in filename)
+
+        # Replace problematic characters for Windows
         invalid_chars = '<>:"/\\|?*'
         for char in invalid_chars:
             filename = filename.replace(char, "_")
+
+        # Remove leading/trailing spaces and dots (Windows doesn't like them)
+        filename = filename.strip(". ")
+
+        # Collapse multiple spaces/underscores
+        while "  " in filename:
+            filename = filename.replace("  ", " ")
+        while "__" in filename:
+            filename = filename.replace("__", "_")
 
         # Limit length
         if len(filename) > 200:
