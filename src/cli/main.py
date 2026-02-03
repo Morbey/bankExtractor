@@ -141,6 +141,11 @@ def gerir_faturas(
         "--pasta", "-p",
         help="Pasta de origem para organizar ficheiros.",
     ),
+    destino: Optional[str] = typer.Option(
+        None,
+        "--destino", "-d",
+        help="Pasta de destino para ficheiros organizados.",
+    ),
     mover: bool = typer.Option(
         False,
         "--mover", "-m",
@@ -150,6 +155,16 @@ def gerir_faturas(
         None,
         "--categoria", "-c",
         help="Filtrar por categoria.",
+    ),
+    ano: Optional[int] = typer.Option(
+        None,
+        "--ano", "-a",
+        help="Filtrar por ano.",
+    ),
+    sem_ano: bool = typer.Option(
+        False,
+        "--sem-ano",
+        help="Não criar subpastas por ano.",
     ),
 ):
     """Gerir faturas - organização e estatísticas."""
@@ -162,11 +177,11 @@ def gerir_faturas(
     acao_lower = acao.lower()
 
     if acao_lower == "organizar":
-        _faturas_organizar(pasta, mover)
+        _faturas_organizar(pasta, destino, mover, not sem_ano)
     elif acao_lower == "listar":
-        _faturas_listar(categoria)
+        _faturas_listar(categoria, ano, destino)
     elif acao_lower == "stats":
-        _faturas_stats()
+        _faturas_stats(destino)
     elif acao_lower == "categorias":
         _faturas_categorias()
     else:
@@ -293,17 +308,26 @@ def _faturas_email():
         raise typer.Exit(1)
 
 
-def _faturas_organizar(pasta: Optional[str], mover: bool):
+def _faturas_organizar(
+    pasta: Optional[str],
+    destino: Optional[str],
+    mover: bool,
+    organize_by_year: bool = True,
+):
     """Organize invoice files from a directory."""
     source_dir = Path(pasta) if pasta else settings.faturas_dir
+    dest_dir = Path(destino) if destino else None
 
     if not source_dir.exists():
         console.print(f"[red]Pasta não encontrada: {source_dir}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"\n[cyan]Organizando faturas em: {source_dir}[/cyan]\n")
+    console.print(f"\n[cyan]Organizando faturas de: {source_dir}[/cyan]")
+    if dest_dir:
+        console.print(f"[cyan]Destino: {dest_dir}[/cyan]")
+    console.print(f"[dim]Organização por ano: {'Sim' if organize_by_year else 'Não'}[/dim]\n")
 
-    organizer = InvoiceOrganizer()
+    organizer = InvoiceOrganizer(base_dir=dest_dir, organize_by_year=organize_by_year)
     db = InvoiceDatabase()
 
     # Find PDF files
@@ -361,18 +385,28 @@ def _faturas_organizar(pasta: Optional[str], mover: bool):
         console.print(f"\n[red]{len(errors)} ficheiros com erros.[/red]")
 
 
-def _faturas_listar(categoria: Optional[str]):
+def _faturas_listar(
+    categoria: Optional[str],
+    ano: Optional[int] = None,
+    destino: Optional[str] = None,
+):
     """List organized invoices."""
-    organizer = InvoiceOrganizer()
+    dest_dir = Path(destino) if destino else None
+    organizer = InvoiceOrganizer(base_dir=dest_dir)
 
     if categoria:
         try:
             cat = InvoiceCategory(categoria.lower())
-            files = organizer.list_category_files(cat)
-            console.print(f"\n[cyan]Faturas em '{cat.value}':[/cyan]\n")
+            files = organizer.list_category_files(cat, year=ano)
+
+            title = f"Faturas em '{cat.value}'"
+            if ano:
+                title += f" ({ano})"
+            console.print(f"\n[cyan]{title}:[/cyan]\n")
 
             for f in files:
-                console.print(f"  {f.name}")
+                # Show relative path from category folder
+                console.print(f"  {f.relative_to(organizer.base_dir)}")
 
             console.print(f"\n[dim]Total: {len(files)} ficheiros[/dim]")
 
@@ -404,10 +438,12 @@ def _faturas_listar(categoria: Optional[str]):
         console.print(table)
 
 
-def _faturas_stats():
+def _faturas_stats(destino: Optional[str] = None):
     """Show invoice statistics from database."""
     db = InvoiceDatabase()
     stats = db.get_statistics()
+    dest_dir = Path(destino) if destino else None
+    organizer = InvoiceOrganizer(base_dir=dest_dir)
 
     console.print("\n[bold cyan]Estatísticas de Faturas[/bold cyan]\n")
 
