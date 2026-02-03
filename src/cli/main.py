@@ -16,9 +16,10 @@ from src.core import CredentialManager, settings
 from src.core.categories import InvoiceCategory, InvoiceCategorizer
 from src.modules.banks import BancoCTTBank, CGDEmpresasBank
 from src.modules.invoices import EmailClient, PDFInvoiceParser
-from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer
+from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer, DocumentProcessor
 from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader
 from src.modules.organizer import DocumentIndexer, DocumentType
+from src.core.document_registry import get_document_registry, EntityType
 from src.modules.reporter import (
     ConsoleFormatter,
     ReportConfig,
@@ -980,6 +981,273 @@ def pesquisar(
 
     console.print(table)
     console.print(f"\n[dim]Use 'bank-extractor documento <ID>' para ver detalhes[/dim]")
+
+
+@app.command()
+def processar(
+    diretorio: Optional[str] = typer.Argument(
+        None,
+        help="Diretório com documentos a processar. Default: data/temp",
+    ),
+    interativo: bool = typer.Option(
+        True,
+        "--interativo/--auto",
+        help="Modo interativo para entidades desconhecidas",
+    ),
+    mover: bool = typer.Option(
+        False,
+        "--mover", "-m",
+        help="Mover ficheiros em vez de copiar",
+    ),
+    recursivo: bool = typer.Option(
+        False,
+        "--recursivo", "-r",
+        help="Processar subdiretórios",
+    ),
+):
+    """Processar documentos - classificar, identificar entidades e organizar."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Processamento de Documentos",
+        border_style="blue",
+    ))
+
+    source_dir = Path(diretorio) if diretorio else settings.data_dir / "temp"
+
+    if not source_dir.exists():
+        console.print(f"[red]Diretório não encontrado: {source_dir}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[cyan]A processar documentos de: {source_dir}[/cyan]")
+    console.print(f"[dim]Modo: {'Interativo' if interativo else 'Automático'}[/dim]")
+    console.print(f"[dim]Ação: {'Mover' if mover else 'Copiar'}[/dim]\n")
+
+    processor = DocumentProcessor()
+    results = processor.process_directory(
+        source_dir,
+        interactive=interativo,
+        move=mover,
+        recursive=recursivo,
+    )
+
+    # Check pending count
+    registry = get_document_registry()
+    pending_count = registry.get_pending_count()
+    if pending_count > 0:
+        console.print(f"\n[yellow]Existem {pending_count} documentos pendentes.[/yellow]")
+        console.print("[dim]Use: bank-extractor pendentes[/dim]")
+
+
+@app.command()
+def pendentes(
+    processar_todos: bool = typer.Option(
+        False,
+        "--processar", "-p",
+        help="Processar todos os documentos pendentes",
+    ),
+    listar: bool = typer.Option(
+        False,
+        "--listar", "-l",
+        help="Listar documentos pendentes",
+    ),
+    limpar: bool = typer.Option(
+        False,
+        "--limpar",
+        help="Limpar a fila de pendentes",
+    ),
+):
+    """Gerir documentos pendentes de classificação."""
+    console.print(Panel.fit(
+        f"[bold yellow]Bank Extractor v{__version__}[/bold yellow]\n"
+        "Documentos Pendentes",
+        border_style="yellow",
+    ))
+
+    registry = get_document_registry()
+
+    if limpar:
+        pending = registry.get_pending_documents()
+        if pending:
+            if Confirm.ask(f"Limpar {len(pending)} documentos pendentes?"):
+                for doc in pending:
+                    registry.remove_from_pending(doc["id"])
+                console.print("[green]Fila de pendentes limpa.[/green]")
+        else:
+            console.print("[green]Não há documentos pendentes.[/green]")
+        return
+
+    if listar or (not processar_todos):
+        registry.show_pending_summary()
+        pending_count = registry.get_pending_count()
+        if pending_count > 0:
+            console.print(f"\n[dim]Use: bank-extractor pendentes --processar[/dim]")
+        return
+
+    if processar_todos:
+        processor = DocumentProcessor()
+        processor.process_pending_queue(interactive=True)
+
+
+@app.command()
+def entidades(
+    acao: str = typer.Argument(
+        "listar",
+        help="Ação: listar, criar, ver, editar",
+    ),
+    nome: Optional[str] = typer.Option(
+        None,
+        "--nome", "-n",
+        help="Nome da entidade",
+    ),
+    pasta: Optional[str] = typer.Option(
+        None,
+        "--pasta", "-p",
+        help="Nome da pasta",
+    ),
+    tipo: Optional[str] = typer.Option(
+        None,
+        "--tipo", "-t",
+        help="Tipo: empresa, pessoa, banco, proprio",
+    ),
+    nif: Optional[str] = typer.Option(
+        None,
+        "--nif",
+        help="NIF a adicionar",
+    ),
+    iban: Optional[str] = typer.Option(
+        None,
+        "--iban",
+        help="IBAN a adicionar",
+    ),
+    entity_id: Optional[str] = typer.Option(
+        None,
+        "--id",
+        help="ID da entidade (para ver/editar)",
+    ),
+):
+    """Gerir entidades (fornecedores, clientes, etc.)."""
+    console.print(Panel.fit(
+        f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
+        "Gestão de Entidades",
+        border_style="green",
+    ))
+
+    registry = get_document_registry()
+    acao_lower = acao.lower()
+
+    if acao_lower == "listar":
+        entities = registry.get_all_entities()
+
+        if not entities:
+            console.print("\n[yellow]Nenhuma entidade registada.[/yellow]")
+            console.print("[dim]Use: bank-extractor entidades criar --nome \"Nome\" --pasta \"pasta\"[/dim]")
+            return
+
+        table = Table(title=f"Entidades Registadas ({len(entities)})")
+        table.add_column("ID", style="dim", width=10)
+        table.add_column("Nome", style="cyan")
+        table.add_column("Pasta", style="green")
+        table.add_column("Tipo", style="yellow")
+        table.add_column("NIFs", style="white")
+        table.add_column("IBANs", style="white")
+
+        for e in entities:
+            nifs_display = ", ".join(e.nifs[:2]) if e.nifs else "-"
+            if len(e.nifs) > 2:
+                nifs_display += f" (+{len(e.nifs) - 2})"
+
+            ibans_display = []
+            for i in e.ibans[:2]:
+                ibans_display.append(f"{i[:8]}...{i[-4:]}")
+            ibans_str = ", ".join(ibans_display) if ibans_display else "-"
+            if len(e.ibans) > 2:
+                ibans_str += f" (+{len(e.ibans) - 2})"
+
+            table.add_row(
+                e.id[:10],
+                e.name[:30],
+                e.folder_name[:20],
+                e.entity_type.value,
+                nifs_display,
+                ibans_str,
+            )
+
+        console.print(table)
+
+    elif acao_lower == "criar":
+        if not nome:
+            console.print("[red]Nome é obrigatório. Use --nome[/red]")
+            raise typer.Exit(1)
+
+        folder_name = pasta or nome.replace(" ", "_")[:30]
+
+        entity_type = EntityType.DESCONHECIDO
+        if tipo:
+            try:
+                entity_type = EntityType(tipo.lower())
+            except ValueError:
+                console.print(f"[yellow]Tipo inválido: {tipo}. Usando 'desconhecido'.[/yellow]")
+
+        nifs_list = [nif] if nif else []
+        ibans_list = [iban] if iban else []
+
+        entity = registry.create_entity(
+            name=nome,
+            folder_name=folder_name,
+            entity_type=entity_type,
+            nifs=nifs_list,
+            ibans=ibans_list,
+        )
+
+        console.print(f"\n[green]Entidade criada com sucesso![/green]")
+        registry.show_entity_summary(entity.id)
+
+    elif acao_lower == "ver":
+        if entity_id:
+            registry.show_entity_summary(entity_id)
+        elif nome:
+            entity = registry.find_entity(name=nome)
+            if entity:
+                registry.show_entity_summary(entity.id)
+            else:
+                console.print(f"[red]Entidade não encontrada: {nome}[/red]")
+        else:
+            console.print("[red]Especifique --id ou --nome[/red]")
+
+    elif acao_lower == "editar":
+        if not entity_id:
+            console.print("[red]ID é obrigatório para editar. Use --id[/red]")
+            raise typer.Exit(1)
+
+        entity = registry.get_entity(entity_id)
+        if not entity:
+            console.print(f"[red]Entidade não encontrada: {entity_id}[/red]")
+            raise typer.Exit(1)
+
+        if nif:
+            registry.add_nif_to_entity(entity_id, nif)
+            console.print(f"[green]NIF adicionado: {nif}[/green]")
+
+        if iban:
+            registry.add_iban_to_entity(entity_id, iban)
+            console.print(f"[green]IBAN adicionado[/green]")
+
+        if nome:
+            entity.name = nome
+            registry.update_entity(entity)
+            console.print(f"[green]Nome actualizado: {nome}[/green]")
+
+        if pasta:
+            entity.folder_name = pasta
+            registry.update_entity(entity)
+            console.print(f"[green]Pasta actualizada: {pasta}[/green]")
+
+        registry.show_entity_summary(entity_id)
+
+    else:
+        console.print(f"[red]Ação desconhecida: {acao}[/red]")
+        console.print("Ações disponíveis: listar, criar, ver, editar")
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -4,11 +4,11 @@ This file provides guidance for Claude Code when working with this repository.
 
 ## Project Overview
 
-Bank Extractor is a personal finance manager written in Python. It automates bank statement extraction, invoice management, document organization, reporting, and expense tracking for Portuguese banks (CGD Empresas and Banco CTT).
+Bank Extractor is a personal finance manager written in Python. It automates bank statement extraction, invoice management, document organization, entity tracking, reporting, and expense tracking for Portuguese banks (CGD Empresas and Banco CTT).
 
 ## Project Status
 
-All 5 implementation phases are **COMPLETE**:
+All 6 implementation phases are **COMPLETE**:
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -17,6 +17,7 @@ All 5 implementation phases are **COMPLETE**:
 | 3 | Document Organizer (PDF parsing, SQLite indexing) | ✅ Complete |
 | 4 | Monthly Reports (Console, HTML, Excel, Email) | ✅ Complete |
 | 5 | Expense Tracking (Budgets, Alerts, Trends) | ✅ Complete |
+| 6 | Document Registry & Entity Management | ✅ Complete |
 
 ## Architecture
 
@@ -27,6 +28,9 @@ bankExtractor/
 │   │   ├── config.py            # Pydantic settings (loads from .env)
 │   │   ├── credentials.py       # Secure credential storage via keyring
 │   │   ├── categories.py        # Centralized category definitions
+│   │   ├── iban_manager.py      # IBAN extraction and mapping
+│   │   ├── transfer_manager.py  # Bank transfer direction detection
+│   │   ├── document_registry.py # Entity and document tracking
 │   │   └── logger.py            # Logging configuration
 │   ├── modules/
 │   │   ├── banks/               # Bank integrations (Playwright-based)
@@ -38,11 +42,13 @@ bankExtractor/
 │   │   │   ├── gmail.py         # Gmail IMAP provider
 │   │   │   ├── hotmail.py       # Hotmail/Outlook IMAP provider
 │   │   │   └── downloader.py    # Download orchestrator
-│   │   ├── organizer/           # Document cataloging (Phase 3)
+│   │   ├── organizer/           # Document cataloging (Phase 3 & 6)
 │   │   │   ├── models.py        # SQLAlchemy models
 │   │   │   ├── parser.py        # PDF text extraction
 │   │   │   ├── classifier.py    # Auto-classification
-│   │   │   └── indexer.py       # SQLite indexing
+│   │   │   ├── indexer.py       # SQLite indexing
+│   │   │   ├── file_organizer.py # File organization by category/year
+│   │   │   └── document_processor.py # Unified document processing
 │   │   ├── reporter/            # Monthly reports (Phase 4)
 │   │   │   ├── models.py        # Report data structures
 │   │   │   ├── generator.py     # Report generation
@@ -57,9 +63,15 @@ bankExtractor/
 │       └── main.py              # Entry point with all commands
 ├── data/
 │   ├── extratos/                # Downloaded bank statements
-│   ├── faturas/                 # Downloaded invoices
+│   ├── faturas/                 # Organized invoices (by year/category/entity)
+│   ├── pagamentos/              # Outgoing payments (comprovativos)
+│   ├── recebimentos/            # Incoming payments (comprovativos)
 │   ├── catalogo/                # Document index (SQLite)
-│   └── expenses/                # Expense database (SQLite)
+│   ├── expenses/                # Expense database (SQLite)
+│   ├── entities.json            # Registered entities
+│   ├── documents.json           # Document registry
+│   ├── pending_documents.json   # Pending classification queue
+│   └── transfer_config.json     # IBAN mappings and my accounts
 └── pyproject.toml               # Project configuration
 ```
 
@@ -83,8 +95,8 @@ bank-extractor extrair cgd|ctt|todos [--inicio DD-MM-YYYY] [--fim DD-MM-YYYY]
 
 ### Invoice Download (Phase 2)
 ```bash
-bank-extractor faturas [gmail|hotmail|todos] [--dias N] [--config]
-bank-extractor faturas-limpar <provider>
+bank-extractor faturas [gmail|hotmail|todos] [--dias N] [--conta NAME] [--config]
+bank-extractor faturas-limpar <provider> [--conta NAME]
 ```
 
 ### Document Organization (Phase 3)
@@ -92,6 +104,14 @@ bank-extractor faturas-limpar <provider>
 bank-extractor organizar [directory] [--reindexar] [--stats]
 bank-extractor pesquisar <query> [--tipo fatura|extrato] [--fornecedor X]
 bank-extractor documento <id> [--abrir]
+```
+
+### Document Processing & Entities (Phase 6)
+```bash
+bank-extractor processar [directory] [--interativo/--auto] [--mover] [--recursivo]
+bank-extractor pendentes [--listar] [--processar] [--limpar]
+bank-extractor entidades listar|criar|ver|editar [--nome X] [--pasta X] [--nif X] [--iban X]
+bank-extractor gerir-faturas organizar|listar|stats|categorias [--pasta X] [--mover]
 ```
 
 ### Reports (Phase 4)
@@ -115,6 +135,22 @@ bank-extractor config
 bank-extractor credenciais <banco>
 bank-extractor versao
 ```
+
+## Document Organization Structure
+
+### Invoices (Faturas)
+```
+data/faturas/<year>/<category>/<entity>/
+```
+Example: `data/faturas/2026/educacao/Misericordia_Amadora/`
+
+### Bank Transfers (Comprovativos)
+```
+data/pagamentos/comprovativos/<entity>/   # Outgoing transfers
+data/recebimentos/comprovativos/<entity>/ # Incoming transfers
+```
+
+Transfer direction is determined by matching IBANs against registered "my accounts".
 
 ## Development Commands
 
@@ -158,6 +194,16 @@ New email providers should:
 1. Inherit from `EmailProviderBase` in `src/modules/invoices/base.py`
 2. Implement `connect()`, `search_emails()`, `download_attachments()`, `disconnect()`
 3. Use IMAP protocol with SSL
+4. Support multi-account via `account` parameter
+
+### Entity Management
+Entities (suppliers, clients, banks) are tracked with:
+- **NIF** (Portuguese tax number)
+- **IBAN** (bank account)
+- **Email** addresses
+- **Name** and aliases
+
+The system automatically identifies entities when processing documents.
 
 ## Security Considerations
 
@@ -167,6 +213,7 @@ New email providers should:
 - Data files in `data/` are gitignored
 - The `.env` file is gitignored
 - All financial data stays local (no cloud sync)
+- Passwords are never logged (use masked display)
 
 ## Environment Variables
 
@@ -177,16 +224,23 @@ Copy `.env.example` to `.env` and configure:
 - `BROWSER_TIMEOUT` - Timeout for browser operations (ms)
 - `INVOICE_DAYS_DEFAULT` - Default days to search for invoices (30)
 
-## Databases
+## Data Files
 
-The project uses SQLite databases stored in `data/`:
+### SQLite Databases
 - `data/catalogo/documents.db` - Document index (Phase 3)
 - `data/expenses/expenses.db` - Expenses and budgets (Phase 5)
+
+### JSON Configuration
+- `data/entities.json` - Registered entities with NIFs, IBANs
+- `data/documents.json` - Processed document records
+- `data/pending_documents.json` - Queue for manual classification
+- `data/transfer_config.json` - My IBANs and counterparty mappings
 
 ## Additional Documentation
 
 - `PROJECT_VISION.md` - Detailed project vision and roadmap
 - `CODE_VALIDATOR_AGENT.md` - Code validation agent persona and guidelines
+- `README.md` - User guide and command reference
 
 ## Important Notes
 
@@ -194,3 +248,4 @@ The project uses SQLite databases stored in `data/`:
 - Browser automation may break if bank websites change
 - Always test bank integrations manually before relying on them
 - Gmail requires App Passwords (not regular passwords) for IMAP access
+- Multi-account email support: use `--conta pessoal` or `--conta empresa`

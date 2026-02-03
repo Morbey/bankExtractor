@@ -2,9 +2,18 @@
 
 from .config import settings
 from .credentials import CredentialManager
+from .document_registry import (
+    DocumentRecord,
+    DocumentRegistry,
+    DocumentStatus,
+    DocumentType,
+    Entity,
+    EntityType,
+    get_document_registry,
+)
 from .iban_manager import IBANManager, get_iban_manager
 from .logger import get_logger
-from .transfer_manager import TransferManager, TransferInfo, get_transfer_manager
+from .transfer_manager import TransferInfo, TransferManager, get_transfer_manager
 
 __all__ = [
     "settings",
@@ -15,4 +24,11 @@ __all__ = [
     "TransferManager",
     "TransferInfo",
     "get_transfer_manager",
+    "DocumentRegistry",
+    "DocumentRecord",
+    "DocumentType",
+    "DocumentStatus",
+    "Entity",
+    "EntityType",
+    "get_document_registry",
 ]
