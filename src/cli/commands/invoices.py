@@ -656,12 +656,20 @@ def _process_invoices_streaming(
     console.print("[dim]Faturas serão apresentadas à medida que são descarregadas.[/dim]")
     console.print("[dim]O download continua em background enquanto processa cada fatura.[/dim]\n")
 
+    # Shared state for progress updates (thread-safe via simple assignment)
+    progress_status = {"message": "A iniciar...", "stage": "connect"}
+
+    def streaming_progress(stage: str, current: int, total: int, message: str):
+        """Update progress status from download thread."""
+        progress_status["stage"] = stage
+        progress_status["message"] = message
+
     # Start streaming download in background
     queue, thread = downloader.download_streaming_multi(
         providers=providers,
         email_filter=email_filter,
         account=account,
-        progress_callback=None,  # We'll show our own progress
+        progress_callback=streaming_progress,
     )
 
     # Track statistics
@@ -670,8 +678,9 @@ def _process_invoices_streaming(
     deleted = 0
     pending = 0
     download_complete = False
+    last_status = ""
 
-    console.print("[yellow]A aguardar primeiras faturas...[/yellow]\n")
+    console.print("[yellow]A aguardar primeiras faturas...[/yellow]")
 
     while True:
         try:
@@ -701,7 +710,21 @@ def _process_invoices_streaming(
                 pending += 1
 
         except Empty:
-            # No invoice available yet, check if thread is still alive
+            # No invoice available yet, show progress from download thread
+            current_status = progress_status["message"]
+            if current_status != last_status:
+                stage = progress_status["stage"]
+                if stage == "connect":
+                    console.print(f"  [cyan]↻[/cyan] {current_status}")
+                elif stage == "search":
+                    console.print(f"  [yellow]↻[/yellow] {current_status}")
+                elif stage == "fetch":
+                    console.print(f"  [blue]↻[/blue] {current_status}")
+                elif stage == "download":
+                    console.print(f"  [green]↻[/green] {current_status}")
+                last_status = current_status
+
+            # Check if thread is still alive
             if not thread.is_alive():
                 # Thread finished, drain remaining items
                 while True:
