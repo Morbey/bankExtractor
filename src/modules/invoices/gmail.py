@@ -30,8 +30,8 @@ class GmailProvider(EmailProviderBase):
     IMAP_SERVER = "imap.gmail.com"
     IMAP_PORT = 993
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, account: Optional[str] = None):
+        super().__init__(account=account)
         self._imap: Optional[imaplib.IMAP4_SSL] = None
 
     def connect(self) -> bool:
@@ -43,7 +43,13 @@ class GmailProvider(EmailProviderBase):
         try:
             email_addr, password = self.get_credentials()
 
-            self.logger.info(f"A ligar ao Gmail ({email_addr})...")
+            # Clean credentials (remove extra spaces from App Password)
+            email_addr = email_addr.strip()
+            password = password.replace(" ", "").strip()
+
+            # Mask email for logging (security)
+            masked_email = self._mask_email(email_addr)
+            self.logger.info(f"A ligar ao Gmail ({masked_email})...")
             self._imap = imaplib.IMAP4_SSL(self.IMAP_SERVER, self.IMAP_PORT)
             self._imap.login(email_addr, password)
             self.logger.info("Ligação estabelecida com sucesso.")

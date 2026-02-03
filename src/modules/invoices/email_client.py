@@ -84,6 +84,20 @@ class EmailClient:
         self.logger = get_logger(__name__)
         self._connection: Optional[imaplib.IMAP4_SSL | imaplib.IMAP4] = None
 
+    @staticmethod
+    def _mask_email(email: str) -> str:
+        """Mask email address for safe logging."""
+        if not email or "@" not in email:
+            return "***"
+        local, domain = email.rsplit("@", 1)
+        masked_local = local[:2] + "***" if len(local) > 2 else "***"
+        domain_parts = domain.split(".")
+        if len(domain_parts) >= 2:
+            masked_domain = domain_parts[0][:2] + "***." + domain_parts[-1]
+        else:
+            masked_domain = "***"
+        return f"{masked_local}@{masked_domain}"
+
     def connect(self) -> bool:
         """Connect to the IMAP server.
 
@@ -97,7 +111,7 @@ class EmailClient:
                 self._connection = imaplib.IMAP4(self.server, self.port)
 
             self._connection.login(self.username, self.password)
-            self.logger.info(f"Conectado a {self.server} como {self.username}")
+            self.logger.info(f"Conectado a {self.server} como {self._mask_email(self.username)}")
             return True
 
         except imaplib.IMAP4.error as e:

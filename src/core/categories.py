@@ -16,12 +16,14 @@ class InvoiceCategory(str, Enum):
     COMBUSTIVEL = "combustivel"
     SEGUROS = "seguros"
     SAUDE = "saude"
+    EDUCACAO = "educacao"
     ALIMENTACAO = "alimentacao"
     TRANSPORTES = "transportes"
     ALOJAMENTO = "alojamento"
     SERVICOS = "servicos"
     MATERIAL_ESCRITORIO = "material_escritorio"
     SOFTWARE = "software"
+    BANCARIO = "bancario"
     OUTROS = "outros"
 
 
@@ -112,10 +114,18 @@ DEFAULT_RULES: list[CategoryRule] = [
     # Agua
     CategoryRule(
         category=InvoiceCategory.AGUA,
-        patterns=[r"epal", r"águas", r"aguas", r"smas", r"indaqua"],
-        sender_domains=["epal.pt", "aguasdoporto.pt"],
-        keywords=["água", "abastecimento", "saneamento", "epal"],
-        nif_list=["500904568"],  # EPAL
+        patterns=[r"epal", r"águas", r"aguas", r"smas", r"simas", r"indaqua"],
+        sender_domains=["epal.pt", "aguasdoporto.pt", "simas-oeiras-amadora.pt"],
+        keywords=["água", "abastecimento", "saneamento", "epal", "simas"],
+        nif_list=["500904568", "505aboraseu"],  # EPAL, SIMAS
+    ),
+
+    # Educacao
+    CategoryRule(
+        category=InvoiceCategory.EDUCACAO,
+        patterns=[r"misericordia", r"misericórdia", r"escola", r"colégio", r"colegio", r"creche", r"infantário", r"infantario"],
+        sender_domains=["misericordia-amadora.pt"],
+        keywords=["educação", "mensalidade escolar", "propina", "creche", "infantário", "colégio"],
     ),
 
     # Combustivel
@@ -182,6 +192,14 @@ DEFAULT_RULES: list[CategoryRule] = [
         patterns=[r"booking", r"airbnb", r"hotel", r"trivago"],
         sender_domains=["booking.com", "airbnb.com"],
         keywords=["hotel", "alojamento", "reserva", "estadia"],
+    ),
+
+    # Bancario
+    CategoryRule(
+        category=InvoiceCategory.BANCARIO,
+        patterns=[r"banco", r"ctt.?banco", r"cgd", r"millennium", r"bpi", r"santander", r"novobanco"],
+        sender_domains=["bancoctt.pt", "cgd.pt", "millenniumbcp.pt", "bancobpi.pt", "santander.pt", "novobanco.pt"],
+        keywords=["extrato", "transferência", "comprovativo", "iban", "movimento bancário"],
     ),
 ]
 

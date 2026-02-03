@@ -20,6 +20,7 @@ Example usage:
 """
 
 from .classifier import ClassificationResult, DocumentClassifier, classify_document
+from .document_processor import DocumentProcessor, ProcessedDocument
 from .file_organizer import InvoiceOrganizer, OrganizedInvoice
 from .indexer import DocumentIndexer, IndexResult, SearchResult
 from .invoice_database import InvoiceDatabase
@@ -62,4 +63,7 @@ __all__ = [
     "OrganizedInvoice",
     # Invoice database
     "InvoiceDatabase",
+    # Document processor
+    "DocumentProcessor",
+    "ProcessedDocument",
 ]

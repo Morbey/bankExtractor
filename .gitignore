@@ -40,8 +40,14 @@ ENV/
 # Data files - NEVER commit these
 data/extratos/*
 data/faturas/*
+data/pagamentos/*
+data/recebimentos/*
+data/catalogo/*
+data/expenses/*
+data/temp/*
 data/*.sqlite
 data/*.db
+data/*.json
 !data/extratos/.gitkeep
 !data/faturas/.gitkeep
 
