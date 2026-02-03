@@ -235,6 +235,33 @@ class EmailProviderBase(ABC):
         finally:
             self.disconnect()
 
+    def run_streaming(
+        self,
+        email_filter: Optional[EmailFilter] = None,
+        invoice_callback: Optional[Callable[[DownloadedInvoice], None]] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> int:
+        """Execute invoice download with streaming - calls callback for each invoice immediately.
+
+        This is the preferred method for parallel processing as it doesn't wait
+        for all emails to be fetched before starting to process attachments.
+
+        Args:
+            email_filter: Filter criteria for emails. If None, uses default filter.
+            invoice_callback: Called immediately for each downloaded invoice.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Total number of invoices downloaded.
+        """
+        # Default implementation uses the batch method
+        # Subclasses can override for true streaming
+        invoices = self.run(email_filter, progress_callback)
+        for invoice in invoices:
+            if invoice_callback:
+                invoice_callback(invoice)
+        return len(invoices)
+
 
 # Common invoice senders in Portugal
 COMMON_INVOICE_SENDERS = [

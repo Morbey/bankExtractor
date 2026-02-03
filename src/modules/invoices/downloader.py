@@ -356,16 +356,15 @@ class InvoiceDownloader:
                         if progress_callback:
                             progress_callback("connect", 1, 1, f"Ligado a {provider_id}")
 
-                        messages = provider.search_emails(filter_to_use, progress_callback)
+                        # Use streaming method - processes each email immediately
+                        def on_invoice(invoice):
+                            invoice_queue.put(invoice)
 
-                        for i, msg in enumerate(messages):
-                            if progress_callback:
-                                subject = msg.get("Subject", "")[:40]
-                                progress_callback("download", i + 1, len(messages), f"{provider_id}: {subject}...")
-
-                            invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
-                            for invoice in invoices:
-                                invoice_queue.put(invoice)
+                        provider.run_streaming(
+                            email_filter=filter_to_use,
+                            invoice_callback=on_invoice,
+                            progress_callback=progress_callback,
+                        )
 
                     except Exception as e:
                         self.logger.error(f"Erro em {provider_id}: {e}")

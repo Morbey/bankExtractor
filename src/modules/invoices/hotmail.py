@@ -429,3 +429,120 @@ class HotmailProvider(EmailProviderBase):
             filename = stem + suffix
 
         return filename
+
+    def run_streaming(
+        self,
+        email_filter: Optional[EmailFilter] = None,
+        invoice_callback=None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> int:
+        """Execute invoice download with true streaming.
+
+        Each email is fetched and processed immediately, calling invoice_callback
+        for each invoice as soon as it's downloaded.
+
+        Args:
+            email_filter: Filter criteria for emails.
+            invoice_callback: Called immediately for each downloaded invoice.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Total number of invoices downloaded.
+        """
+        from typing import Callable
+        from .base import DownloadedInvoice
+
+        if email_filter is None:
+            email_filter = EmailFilter()
+
+        if not self._imap:
+            self.logger.error("Não está ligado ao servidor.")
+            return 0
+
+        total_invoices = 0
+
+        try:
+            self._imap.select("INBOX")
+        except Exception as e:
+            self.logger.error(f"Erro ao selecionar INBOX: {e}")
+            return 0
+
+        base_criteria = self._build_search_criteria(email_filter)
+        senders = email_filter.senders if email_filter.senders else [None]
+
+        # First, collect all message IDs (fast operation)
+        all_msg_ids = []
+        for sender in senders:
+            try:
+                if sender:
+                    search_criteria = f'{base_criteria} FROM "{sender}"'
+                else:
+                    search_criteria = base_criteria
+
+                status, msg_ids = self._imap.search(None, search_criteria)
+                if status == "OK":
+                    all_msg_ids.extend(msg_ids[0].split())
+            except Exception as e:
+                self.logger.error(f"Erro na pesquisa: {e}")
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_msg_ids = []
+        for mid in all_msg_ids:
+            if mid not in seen:
+                seen.add(mid)
+                unique_msg_ids.append(mid)
+
+        total_emails = len(unique_msg_ids)
+        self.logger.info(f"Encontrados {total_emails} emails para processar.")
+
+        if progress_callback:
+            progress_callback("fetch", 0, total_emails, f"A processar {total_emails} emails...")
+
+        # Process each email immediately (fetch → download → callback)
+        for idx, msg_id in enumerate(unique_msg_ids):
+            try:
+                if progress_callback:
+                    progress_callback(
+                        "fetch",
+                        idx + 1,
+                        total_emails,
+                        f"Email {idx + 1}/{total_emails}..."
+                    )
+
+                # Fetch this single email
+                status, msg_data = self._imap.fetch(msg_id, "(RFC822)")
+                if status != "OK" or not msg_data[0]:
+                    continue
+
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                # Check if has attachments with desired extensions
+                if email_filter.has_attachment:
+                    if not self._has_matching_attachment(msg, email_filter.attachment_extensions):
+                        continue
+
+                # Download attachments immediately
+                invoices = self.download_attachments(msg, email_filter.attachment_extensions)
+
+                # Call callback for each invoice immediately
+                for invoice in invoices:
+                    total_invoices += 1
+                    if invoice_callback:
+                        invoice_callback(invoice)
+
+                    if progress_callback:
+                        progress_callback(
+                            "download",
+                            total_invoices,
+                            0,  # Unknown total
+                            f"Descarregada: {invoice.file_name[:40]}..."
+                        )
+
+            except Exception as e:
+                self.logger.error(f"Erro ao processar email: {e}")
+                continue
+
+        self.logger.info(f"Descarregadas {total_invoices} faturas.")
+        return total_invoices

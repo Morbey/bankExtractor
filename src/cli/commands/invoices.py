@@ -653,16 +653,17 @@ def _process_invoices_streaming(
     processor = InvoiceProcessor()
 
     console.print(f"\n[bold cyan]Modo paralelo: a descarregar e processar simultaneamente...[/bold cyan]")
-    console.print("[dim]Faturas serão apresentadas à medida que são descarregadas.[/dim]")
-    console.print("[dim]O download continua em background enquanto processa cada fatura.[/dim]\n")
+    console.print("[dim]Faturas serão apresentadas à medida que são descarregadas.[/dim]\n")
 
     # Shared state for progress updates (thread-safe via simple assignment)
-    progress_status = {"message": "A iniciar...", "stage": "connect"}
+    progress_status = {"message": "A iniciar...", "stage": "connect", "current": 0, "total": 0}
 
     def streaming_progress(stage: str, current: int, total: int, message: str):
         """Update progress status from download thread."""
         progress_status["stage"] = stage
         progress_status["message"] = message
+        progress_status["current"] = current
+        progress_status["total"] = total
 
     # Start streaming download in background
     queue, thread = downloader.download_streaming_multi(
@@ -678,77 +679,88 @@ def _process_invoices_streaming(
     deleted = 0
     pending = 0
     download_complete = False
-    last_status = ""
 
-    console.print("[yellow]A aguardar primeiras faturas...[/yellow]")
+    # Use a status line that updates in place
+    from rich.status import Status
 
-    while True:
-        try:
-            # Get next invoice with timeout
-            item = queue.get(timeout=0.5)
+    with Status("[yellow]A aguardar...[/yellow]", console=console) as status:
+        while True:
+            try:
+                # Get next invoice with short timeout
+                item = queue.get(timeout=0.3)
 
-            if item is _DOWNLOAD_COMPLETE:
-                download_complete = True
-                break
+                if item is _DOWNLOAD_COMPLETE:
+                    download_complete = True
+                    break
 
-            # Process this invoice immediately
-            invoice = item
-            processed += 1
+                # Stop status spinner while processing
+                status.stop()
 
-            console.print(f"\n[cyan]━━━ Fatura {processed} ━━━[/cyan]")
-            if not download_complete:
-                console.print("[dim](download continua em background...)[/dim]")
+                # Process this invoice immediately
+                invoice = item
+                processed += 1
 
-            result = processor.process_invoice(invoice, interactive=True, move=move)
+                console.print(f"\n[cyan]━━━ Fatura {processed} ━━━[/cyan]")
 
-            if result.success:
-                if result.destination_path:
-                    organized += 1
-                elif result.error and "eliminado" in result.error.lower():
-                    deleted += 1
-            else:
-                pending += 1
+                result = processor.process_invoice(invoice, interactive=True, move=move)
 
-        except Empty:
-            # No invoice available yet, show progress from download thread
-            current_status = progress_status["message"]
-            if current_status != last_status:
+                if result.success:
+                    if result.destination_path:
+                        organized += 1
+                    elif result.error and "eliminado" in result.error.lower():
+                        deleted += 1
+                else:
+                    pending += 1
+
+                # Resume status spinner
+                status.start()
+
+            except Empty:
+                # Update status bar with current progress
                 stage = progress_status["stage"]
-                if stage == "connect":
-                    console.print(f"  [cyan]↻[/cyan] {current_status}")
-                elif stage == "search":
-                    console.print(f"  [yellow]↻[/yellow] {current_status}")
-                elif stage == "fetch":
-                    console.print(f"  [blue]↻[/blue] {current_status}")
-                elif stage == "download":
-                    console.print(f"  [green]↻[/green] {current_status}")
-                last_status = current_status
+                msg = progress_status["message"]
+                current = progress_status["current"]
+                total = progress_status["total"]
 
-            # Check if thread is still alive
-            if not thread.is_alive():
-                # Thread finished, drain remaining items
-                while True:
-                    try:
-                        item = queue.get_nowait()
-                        if item is _DOWNLOAD_COMPLETE:
-                            download_complete = True
+                if stage == "connect":
+                    status.update(f"[cyan]⟳ {msg}[/cyan]")
+                elif stage == "fetch":
+                    if total > 0:
+                        status.update(f"[yellow]⟳ Email {current}/{total} | Faturas: {processed}[/yellow]")
+                    else:
+                        status.update(f"[yellow]⟳ {msg}[/yellow]")
+                elif stage == "download":
+                    status.update(f"[green]⟳ {msg} | Total: {processed}[/green]")
+                else:
+                    status.update(f"[blue]⟳ {msg}[/blue]")
+
+                # Check if thread is still alive
+                if not thread.is_alive():
+                    # Thread finished, drain remaining items
+                    status.stop()
+                    while True:
+                        try:
+                            item = queue.get_nowait()
+                            if item is _DOWNLOAD_COMPLETE:
+                                download_complete = True
+                                break
+                            # Process remaining
+                            invoice = item
+                            processed += 1
+                            console.print(f"\n[cyan]━━━ Fatura {processed} ━━━[/cyan]")
+                            result = processor.process_invoice(invoice, interactive=True, move=move)
+                            if result.success:
+                                if result.destination_path:
+                                    organized += 1
+                                elif result.error and "eliminado" in result.error.lower():
+                                    deleted += 1
+                            else:
+                                pending += 1
+                        except Empty:
                             break
-                        # Process remaining
-                        invoice = item
-                        processed += 1
-                        result = processor.process_invoice(invoice, interactive=True, move=move)
-                        if result.success:
-                            if result.destination_path:
-                                organized += 1
-                            elif result.error and "eliminado" in result.error.lower():
-                                deleted += 1
-                        else:
-                            pending += 1
-                    except Empty:
-                        break
-                break
-            # Otherwise, just continue waiting
-            continue
+                    break
+                # Otherwise, just continue waiting
+                continue
 
     # Wait for thread to fully complete
     thread.join(timeout=2.0)
