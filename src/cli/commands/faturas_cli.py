@@ -2,13 +2,13 @@
 
 Usage:
     bank-extractor faturas                    # Show help
-    bank-extractor faturas contas             # List configured accounts
     bank-extractor faturas download           # Download and process
     bank-extractor faturas scrape gmail       # Just download to inbox
     bank-extractor faturas inbox --stats      # Inbox management
     bank-extractor faturas processar          # Process pending from inbox
     bank-extractor faturas gerir organizar    # File organization
-    bank-extractor faturas limpar gmail       # Delete credentials
+
+Credentials are managed via: config credenciais
 """
 
 import typer
@@ -27,8 +27,6 @@ from src.cli.commands.invoices import (
     faturas_scrape as _faturas_scrape,
     faturas_inbox as _faturas_inbox,
     faturas_processar_inbox as _faturas_processar,
-    faturas_limpar as _faturas_limpar,
-    faturas_contas as _faturas_contas,
     gerir_faturas as _gerir_faturas,
 )
 
@@ -47,10 +45,8 @@ def faturas_default(ctx: typer.Context):
 
 
 # Register subcommands (alphabetical order)
-faturas_app.command(name="contas", help="Listar contas de email configuradas")(_faturas_contas)
 faturas_app.command(name="download", help="Descarregar e processar faturas do email")(_faturas_download)
 faturas_app.command(name="gerir", help="Organizar ficheiros e estatísticas")(_gerir_faturas)
 faturas_app.command(name="inbox", help="Gerir inbox - stats, listar, migrar")(_faturas_inbox)
-faturas_app.command(name="limpar", help="Apagar credenciais de email (ELIMINA)")(_faturas_limpar)
 faturas_app.command(name="processar", help="Processar anexos pendentes do inbox")(_faturas_processar)
 faturas_app.command(name="scrape", help="Descarregar emails para inbox (sem processar)")(_faturas_scrape)

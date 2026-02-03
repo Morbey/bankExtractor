@@ -1082,40 +1082,20 @@ def _apply_exclusions(
     return result
 
 
-def faturas_contas():
-    """Listar contas de email configuradas."""
-    accounts = _get_configured_accounts()
-
-    if not accounts:
-        console.print("[yellow]Nenhuma conta de email configurada.[/yellow]")
-        console.print("\n[dim]Para configurar uma conta:[/dim]")
-        console.print("  bank-extractor faturas download gmail --conta pessoal --config")
-        return
-
-    console.print("\n[bold cyan]Contas de email configuradas:[/bold cyan]\n")
-
-    from rich.table import Table
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Provider", style="cyan")
-    table.add_column("Conta", style="green")
-    table.add_column("Email", style="white")
-
-    for provider_id, account_name in accounts:
-        credential_key = f"{provider_id}_{account_name}" if account_name else provider_id
-        email = CredentialManager.get_credential(credential_key, "email") or "[não definido]"
-        account_display = account_name or "(default)"
-        table.add_row(provider_id.upper(), account_display, email)
-
-    console.print(table)
-    console.print(f"\n[dim]Total: {len(accounts)} conta(s) configurada(s)[/dim]")
-
-
-def faturas_limpar(
-    provider: str = typer.Argument(..., help="Provider de email: gmail, hotmail"),
+def faturas_credenciais(
+    provider: Optional[str] = typer.Argument(
+        None,
+        help="Provider de email: gmail, hotmail (sem argumento lista contas)",
+    ),
     conta: Optional[str] = typer.Option(
         None,
         "--conta",
-        help="Nome da conta a apagar (ex: pessoal, empresa)",
+        help="Nome da conta (ex: pessoal, empresa)",
+    ),
+    apagar: bool = typer.Option(
+        False,
+        "--apagar",
+        help="Apagar credenciais (requer confirmação)",
     ),
     confirmar: bool = typer.Option(
         False,
@@ -1124,42 +1104,102 @@ def faturas_limpar(
         help="Confirmar eliminação sem perguntar",
     ),
 ):
-    """Apagar credenciais de email guardadas.
+    """Gerir credenciais de email.
 
-    ATENÇÃO: Este comando APAGA as credenciais permanentemente.
-    Use 'faturas contas' para ver as contas configuradas.
+    Sem argumentos: lista contas configuradas.
+    Com provider: configura credenciais.
+    Com --apagar: remove credenciais (pede confirmação).
+
+    Exemplos:
+        faturas credenciais                     # Lista contas
+        faturas credenciais gmail --conta pessoal   # Configura
+        faturas credenciais gmail --apagar      # Apaga
     """
+    from rich.table import Table
+
+    # No provider = list accounts
+    if provider is None:
+        accounts = _get_configured_accounts()
+
+        if not accounts:
+            console.print("[yellow]Nenhuma conta de email configurada.[/yellow]")
+            console.print("\n[dim]Para configurar:[/dim]")
+            console.print("  bank-extractor faturas credenciais gmail --conta pessoal")
+            return
+
+        console.print("\n[bold cyan]Contas de email configuradas:[/bold cyan]\n")
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Provider", style="cyan")
+        table.add_column("Conta", style="green")
+        table.add_column("Email", style="white")
+
+        for provider_id, account_name in accounts:
+            credential_key = f"{provider_id}_{account_name}" if account_name else provider_id
+            email = CredentialManager.get_credential(credential_key, "email") or "[não definido]"
+            account_display = account_name or "(default)"
+            table.add_row(provider_id.upper(), account_display, email)
+
+        console.print(table)
+        console.print(f"\n[dim]Total: {len(accounts)} conta(s) configurada(s)[/dim]")
+        console.print("\n[dim]Para apagar: faturas credenciais <provider> --apagar[/dim]")
+        return
+
+    # Validate provider
     if provider.lower() not in EMAIL_PROVIDERS:
         console.print(f"[red]Provider desconhecido: {provider}[/red]")
+        console.print(f"Providers disponíveis: {', '.join(EMAIL_PROVIDERS.keys())}")
         raise typer.Exit(1)
 
-    # Build credential key with account name if provided
     credential_key = f"{provider.lower()}_{conta}" if conta else provider.lower()
     display_name = f"{provider.upper()} ({conta})" if conta else provider.upper()
 
-    # Check if credentials exist
-    email = CredentialManager.get_credential(credential_key, "email")
-    if not email:
-        console.print(f"[yellow]Não existem credenciais configuradas para {display_name}.[/yellow]")
-        console.print("\n[dim]Use 'bank-extractor faturas contas' para ver contas configuradas.[/dim]")
-        return
-
-    # Show what will be deleted
-    console.print(f"\n[bold red]APAGAR credenciais de:[/bold red]")
-    console.print(f"  Provider: {provider.upper()}")
-    console.print(f"  Conta: {conta or '(default)'}")
-    console.print(f"  Email: {email}")
-
-    # Confirm deletion
-    if not confirmar:
-        from rich.prompt import Confirm
-        if not Confirm.ask("\n[red]Tem a certeza que quer apagar estas credenciais?[/red]", default=False):
-            console.print("[dim]Operação cancelada.[/dim]")
+    # Delete mode
+    if apagar:
+        email = CredentialManager.get_credential(credential_key, "email")
+        if not email:
+            console.print(f"[yellow]Não existem credenciais para {display_name}.[/yellow]")
             return
 
-    CredentialManager.delete_credential(credential_key, "email")
-    CredentialManager.delete_credential(credential_key, "password")
-    console.print(f"\n[green]Credenciais de {display_name} apagadas.[/green]")
+        console.print(f"\n[bold red]APAGAR credenciais de:[/bold red]")
+        console.print(f"  Provider: {provider.upper()}")
+        console.print(f"  Conta: {conta or '(default)'}")
+        console.print(f"  Email: {email}")
+
+        if not confirmar:
+            from rich.prompt import Confirm
+            if not Confirm.ask("\n[red]Tem a certeza?[/red]", default=False):
+                console.print("[dim]Operação cancelada.[/dim]")
+                return
+
+        CredentialManager.delete_credential(credential_key, "email")
+        CredentialManager.delete_credential(credential_key, "password")
+        console.print(f"\n[green]Credenciais de {display_name} apagadas.[/green]")
+        return
+
+    # Configure mode
+    console.print(f"\n[bold cyan]Configurar credenciais {display_name}[/bold cyan]")
+
+    if provider.lower() == "gmail":
+        console.print(
+            "[yellow]Nota: O Gmail requer uma App Password.[/yellow]\n"
+            "1. Ative a verificação em 2 passos\n"
+            "2. Crie App Password em: https://myaccount.google.com/apppasswords\n"
+        )
+
+    email_addr = CredentialManager.get_or_prompt(
+        credential_key,
+        "email",
+        f"Email {display_name}",
+        password=False,
+    )
+    CredentialManager.get_or_prompt(
+        credential_key,
+        "password",
+        f"Password/App Password {display_name}",
+        password=True,
+    )
+    console.print(f"[green]Credenciais configuradas para {display_name}[/green]")
 
 
 # ==================== Inbox System Commands ====================

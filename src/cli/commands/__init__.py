@@ -17,7 +17,6 @@ from src.cli.commands.expenses import alertas, despesas, orcamento, tendencias
 from src.cli.commands.invoices import (
     faturas,
     faturas_inbox,
-    faturas_limpar,
     faturas_processar_inbox,
     faturas_scrape,
     gerir_faturas,
@@ -31,7 +30,6 @@ __all__ = [
     # Invoices
     "gerir_faturas",
     "faturas",
-    "faturas_limpar",
     "faturas_scrape",
     "faturas_inbox",
     "faturas_processar_inbox",
