@@ -19,21 +19,24 @@ def despesas(
     ),
     importar: bool = typer.Option(
         False,
-        "--importar", "-i",
+        "--importar",
+        "-i",
         help="Importar despesas dos documentos indexados",
     ),
     categoria: Optional[str] = typer.Option(
         None,
-        "--categoria", "-c",
+        "--categoria",
+        "-c",
         help="Filtrar por categoria",
     ),
 ):
     """Ver e analisar despesas."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Tracking de Despesas",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Tracking de Despesas",
+            border_style="blue",
+        )
+    )
 
     tracker = ExpenseTracker()
 
@@ -65,7 +68,9 @@ def despesas(
     summary_table.add_column("Metric", style="cyan")
     summary_table.add_column("Value", style="white")
 
-    summary_table.add_row("Total despesas", f"[bold green]{analysis.total_expenses:.2f}€[/bold green]")
+    summary_table.add_row(
+        "Total despesas", f"[bold green]{analysis.total_expenses:.2f}€[/bold green]"
+    )
     summary_table.add_row("Número de despesas", str(analysis.expense_count))
 
     if analysis.comparison_previous is not None:
@@ -73,7 +78,7 @@ def despesas(
         color = "red" if analysis.comparison_percentage > 0 else "green"
         summary_table.add_row(
             "vs. mês anterior",
-            f"[{color}]{trend} {analysis.comparison_previous:+.2f}€ ({analysis.comparison_percentage:+.1f}%)[/{color}]"
+            f"[{color}]{trend} {analysis.comparison_previous:+.2f}€ ({analysis.comparison_percentage:+.1f}%)[/{color}]",
         )
 
     console.print(summary_table)
@@ -93,7 +98,9 @@ def despesas(
                 continue
 
             trend_icon = {"up": "▲", "down": "▼", "stable": "─", "new": "★"}.get(cat.trend, "─")
-            trend_color = {"up": "red", "down": "green", "stable": "yellow", "new": "cyan"}.get(cat.trend, "white")
+            trend_color = {"up": "red", "down": "green", "stable": "yellow", "new": "cyan"}.get(
+                cat.trend, "white"
+            )
 
             cat_table.add_row(
                 cat.category_name,
@@ -121,7 +128,9 @@ def despesas(
     if analysis.alerts:
         console.print(f"\n[bold yellow]Alertas ({len(analysis.alerts)})[/bold yellow]")
         for alert in analysis.alerts[:5]:
-            severity_color = {"info": "blue", "aviso": "yellow", "critico": "red"}.get(alert.severity, "white")
+            severity_color = {"info": "blue", "aviso": "yellow", "critico": "red"}.get(
+                alert.severity, "white"
+            )
             console.print(f"  [{severity_color}]•[/{severity_color}] {alert.message}")
 
 
@@ -132,26 +141,30 @@ def orcamento(
     ),
     valor: Optional[float] = typer.Option(
         None,
-        "--valor", "-v",
+        "--valor",
+        "-v",
         help="Valor limite mensal",
     ),
     listar: bool = typer.Option(
         False,
-        "--listar", "-l",
+        "--listar",
+        "-l",
         help="Listar todos os orçamentos",
     ),
     remover: bool = typer.Option(
         False,
-        "--remover", "-r",
+        "--remover",
+        "-r",
         help="Remover orçamento da categoria",
     ),
 ):
     """Gerir orçamentos por categoria."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Gestão de Orçamentos",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Gestão de Orçamentos",
+            border_style="blue",
+        )
+    )
 
     tracker = ExpenseTracker()
 
@@ -233,21 +246,24 @@ def orcamento(
 def alertas(
     limpar: bool = typer.Option(
         False,
-        "--limpar", "-l",
+        "--limpar",
+        "-l",
         help="Limpar todos os alertas",
     ),
     verificar: bool = typer.Option(
         False,
-        "--verificar", "-v",
+        "--verificar",
+        "-v",
         help="Verificar orçamentos e gerar alertas",
     ),
 ):
     """Ver e gerir alertas de despesas."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Alertas de Despesas",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Alertas de Despesas",
+            border_style="blue",
+        )
+    )
 
     tracker = ExpenseTracker()
 
@@ -303,16 +319,18 @@ def alertas(
 def tendencias(
     meses: int = typer.Option(
         6,
-        "--meses", "-m",
+        "--meses",
+        "-m",
         help="Número de meses a analisar",
     ),
 ):
     """Ver tendências de despesas."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        f"Tendências ({meses} meses)",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" f"Tendências ({meses} meses)",
+            border_style="blue",
+        )
+    )
 
     tracker = ExpenseTracker()
     trends = tracker.get_trends(meses)
@@ -339,7 +357,7 @@ def tendencias(
     console.print(table)
 
     # Summary
-    console.print(f"\n[bold]Resumo[/bold]")
+    console.print("\n[bold]Resumo[/bold]")
     summary = Table(show_header=False)
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="white")
@@ -347,7 +365,12 @@ def tendencias(
     summary.add_row("Média mensal", f"{trends['average_monthly']:.2f}€")
 
     trend_icon = {"up": "▲", "down": "▼", "stable": "─"}.get(trends["trend_direction"], "─")
-    trend_color = {"up": "red", "down": "green", "stable": "yellow"}.get(trends["trend_direction"], "white")
-    summary.add_row("Tendência", f"[{trend_color}]{trend_icon} {trends['trend_direction'].title()}[/{trend_color}]")
+    trend_color = {"up": "red", "down": "green", "stable": "yellow"}.get(
+        trends["trend_direction"], "white"
+    )
+    summary.add_row(
+        "Tendência",
+        f"[{trend_color}]{trend_icon} {trends['trend_direction'].title()}[/{trend_color}]",
+    )
 
     console.print(summary)

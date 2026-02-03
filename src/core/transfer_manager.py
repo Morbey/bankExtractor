@@ -3,7 +3,6 @@
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -66,7 +65,9 @@ class TransferManager:
                     self._my_ibans = set(data.get("my_ibans", []))
                     self._iban_mappings = data.get("iban_mappings", {})
                     self._beneficiary_mappings = data.get("beneficiary_mappings", {})
-                logger.debug(f"Loaded transfer config: {len(self._my_ibans)} IBANs, {len(self._iban_mappings)} mappings")
+                logger.debug(
+                    f"Loaded transfer config: {len(self._my_ibans)} IBANs, {len(self._iban_mappings)} mappings"
+                )
             except Exception as e:
                 logger.error(f"Error loading transfer config: {e}")
 
@@ -152,7 +153,9 @@ class TransferManager:
         self._save_config()
         logger.info(f"Beneficiary '{beneficiary}' -> '{folder_name}'")
 
-    def get_folder_name(self, iban: Optional[str] = None, beneficiary: Optional[str] = None) -> Optional[str]:
+    def get_folder_name(
+        self, iban: Optional[str] = None, beneficiary: Optional[str] = None
+    ) -> Optional[str]:
         """Get folder name for IBAN or beneficiary.
 
         Args:
@@ -248,7 +251,9 @@ class TransferManager:
         if info.cliente:
             info.cliente = re.sub(r"^Cliente\s+", "", info.cliente, flags=re.IGNORECASE).strip()
         if info.beneficiario:
-            info.beneficiario = re.sub(r"^Benefici.rio\s+", "", info.beneficiario, flags=re.IGNORECASE).strip()
+            info.beneficiario = re.sub(
+                r"^Benefici.rio\s+", "", info.beneficiario, flags=re.IGNORECASE
+            ).strip()
 
         return info
 
@@ -299,8 +304,7 @@ class TransferManager:
         if direction == "pagamento":
             # Outgoing - use destination IBAN/beneficiary
             counterparty_folder = self.get_folder_name(
-                iban=info.iban_destino,
-                beneficiary=info.beneficiario
+                iban=info.iban_destino, beneficiary=info.beneficiario
             )
             if counterparty_folder:
                 folder = base / "pagamentos" / "comprovativos" / counterparty_folder
@@ -309,8 +313,7 @@ class TransferManager:
         elif direction == "recebimento":
             # Incoming - use source IBAN/client
             counterparty_folder = self.get_folder_name(
-                iban=info.iban_origem,
-                beneficiary=info.cliente
+                iban=info.iban_origem, beneficiary=info.cliente
             )
             if counterparty_folder:
                 folder = base / "recebimentos" / "comprovativos" / counterparty_folder
@@ -342,19 +345,19 @@ class TransferManager:
         if direction == "pagamento":
             iban = info.iban_destino
             name = info.beneficiario
-            console.print(f"[cyan]Tipo:[/cyan] Pagamento (saída)")
+            console.print("[cyan]Tipo:[/cyan] Pagamento (saída)")
             console.print(f"[cyan]IBAN Destino:[/cyan] {iban}")
             console.print(f"[cyan]Beneficiário:[/cyan] {name or 'N/A'}")
         else:
             iban = info.iban_origem
             name = info.cliente
-            console.print(f"[cyan]Tipo:[/cyan] Recebimento (entrada)")
+            console.print("[cyan]Tipo:[/cyan] Recebimento (entrada)")
             console.print(f"[cyan]IBAN Origem:[/cyan] {iban}")
             console.print(f"[cyan]Cliente:[/cyan] {name or 'N/A'}")
 
         folder_name = Prompt.ask(
             "\nQual o nome para a pasta desta entidade?",
-            default=name.replace(" ", "_")[:30] if name else "desconhecido"
+            default=name.replace(" ", "_")[:30] if name else "desconhecido",
         )
 
         # Sanitize folder name

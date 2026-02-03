@@ -7,8 +7,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Callable, Optional
 
-from src.core import CredentialManager, get_logger, settings
-
+from src.core import CredentialManager, get_logger
 
 # Type alias for progress callback: (stage, current, total, message)
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -80,7 +79,9 @@ class EmailProviderBase(ABC):
         Returns:
             Tuple of (email, password/app_password)
         """
-        display_name = f"{self.PROVIDER_NAME} ({self.account})" if self.account else self.PROVIDER_NAME
+        display_name = (
+            f"{self.PROVIDER_NAME} ({self.account})" if self.account else self.PROVIDER_NAME
+        )
 
         email = CredentialManager.get_or_prompt(
             self._credential_key,
@@ -220,13 +221,17 @@ class EmailProviderBase(ABC):
             self.logger.info(f"Encontrados {len(messages)} emails com faturas.")
 
             if progress_callback:
-                progress_callback("download", 0, len(messages), f"A processar {len(messages)} emails...")
+                progress_callback(
+                    "download", 0, len(messages), f"A processar {len(messages)} emails..."
+                )
 
             all_invoices = []
             for i, msg in enumerate(messages):
                 if progress_callback:
                     subject = msg.get("Subject", "")[:40]
-                    progress_callback("download", i + 1, len(messages), f"A processar: {subject}...")
+                    progress_callback(
+                        "download", i + 1, len(messages), f"A processar: {subject}..."
+                    )
 
                 invoices = self.download_attachments(msg, email_filter.attachment_extensions)
                 all_invoices.extend(invoices)

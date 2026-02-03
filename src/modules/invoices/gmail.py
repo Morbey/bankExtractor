@@ -90,11 +90,11 @@ class GmailProvider(EmailProviderBase):
         # Date filters
         if email_filter.start_date:
             date_str = email_filter.start_date.strftime("%d-%b-%Y")
-            criteria.append(f'SINCE {date_str}')
+            criteria.append(f"SINCE {date_str}")
 
         if email_filter.end_date:
             date_str = email_filter.end_date.strftime("%d-%b-%Y")
-            criteria.append(f'BEFORE {date_str}')
+            criteria.append(f"BEFORE {date_str}")
 
         # Subject filter - use first subject keyword
         if email_filter.subject_contains:
@@ -209,10 +209,7 @@ class GmailProvider(EmailProviderBase):
 
                 if progress_callback:
                     progress_callback(
-                        "search",
-                        sender_idx + 1,
-                        total_senders,
-                        f"A pesquisar: {sender_display}..."
+                        "search", sender_idx + 1, total_senders, f"A pesquisar: {sender_display}..."
                     )
 
                 self.logger.debug(f"Critério de pesquisa: {search_criteria}")
@@ -234,7 +231,7 @@ class GmailProvider(EmailProviderBase):
                             "fetch",
                             0,
                             num_found,
-                            f"A obter {num_found} emails de {sender_display}..."
+                            f"A obter {num_found} emails de {sender_display}...",
                         )
 
                 # Fetch each message
@@ -244,7 +241,7 @@ class GmailProvider(EmailProviderBase):
                             "fetch",
                             fetch_idx + 1,
                             num_found,
-                            f"A obter email {fetch_idx + 1}/{num_found} de {sender_display}..."
+                            f"A obter email {fetch_idx + 1}/{num_found} de {sender_display}...",
                         )
 
                     status, msg_data = self._imap.fetch(msg_id, "(RFC822)")
@@ -254,7 +251,9 @@ class GmailProvider(EmailProviderBase):
 
                         # Check if has attachments with desired extensions
                         if email_filter.has_attachment:
-                            if self._has_matching_attachment(msg, email_filter.attachment_extensions):
+                            if self._has_matching_attachment(
+                                msg, email_filter.attachment_extensions
+                            ):
                                 messages.append(msg)
                         else:
                             messages.append(msg)
@@ -325,8 +324,9 @@ class GmailProvider(EmailProviderBase):
                         html = payload.decode(charset, errors="replace")
                         # Basic HTML to text - remove tags
                         import re
-                        text = re.sub(r'<[^>]+>', ' ', html)
-                        text = re.sub(r'\s+', ' ', text).strip()
+
+                        text = re.sub(r"<[^>]+>", " ", html)
+                        text = re.sub(r"\s+", " ", text).strip()
                         body_parts.append(text)
                 except Exception:
                     pass
@@ -501,8 +501,6 @@ class GmailProvider(EmailProviderBase):
         Returns:
             Total number of invoices downloaded.
         """
-        from typing import Callable
-        from .base import DownloadedInvoice
 
         if email_filter is None:
             email_filter = EmailFilter()
@@ -556,10 +554,7 @@ class GmailProvider(EmailProviderBase):
             try:
                 if progress_callback:
                     progress_callback(
-                        "fetch",
-                        idx + 1,
-                        total_emails,
-                        f"Email {idx + 1}/{total_emails}..."
+                        "fetch", idx + 1, total_emails, f"Email {idx + 1}/{total_emails}..."
                     )
 
                 # Fetch this single email
@@ -589,7 +584,7 @@ class GmailProvider(EmailProviderBase):
                             "download",
                             total_invoices,
                             0,  # Unknown total
-                            f"Descarregada: {invoice.file_name[:40]}..."
+                            f"Descarregada: {invoice.file_name[:40]}...",
                         )
 
             except Exception as e:

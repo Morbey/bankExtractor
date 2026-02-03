@@ -54,6 +54,7 @@ __all__ = [
     "EMAIL_PROVIDERS",
     # Main downloader
     "InvoiceDownloader",
+    "_DOWNLOAD_COMPLETE",
     # Invoice processor
     "InvoiceProcessor",
     "ProcessedInvoice",

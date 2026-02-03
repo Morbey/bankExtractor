@@ -49,12 +49,16 @@ class ExpenseAnalyzer:
 
         with get_session() as session:
             # Get expenses for the month
-            expenses = session.execute(
-                select(Expense)
-                .where(Expense.expense_date >= start_date)
-                .where(Expense.expense_date <= end_date)
-                .order_by(Expense.expense_date.desc())
-            ).scalars().all()
+            expenses = (
+                session.execute(
+                    select(Expense)
+                    .where(Expense.expense_date >= start_date)
+                    .where(Expense.expense_date <= end_date)
+                    .order_by(Expense.expense_date.desc())
+                )
+                .scalars()
+                .all()
+            )
 
             # Calculate totals
             total_amount = sum(e.amount for e in expenses)
@@ -101,8 +105,8 @@ class ExpenseAnalyzer:
 
         # Get budgets
         budgets = {
-            b.category: b for b in
-            session.execute(select(Budget).where(Budget.is_active == True)).scalars().all()
+            b.category: b
+            for b in session.execute(select(Budget).where(Budget.is_active)).scalars().all()
         }
 
         # Get previous month data for trends
@@ -115,11 +119,15 @@ class ExpenseAnalyzer:
         _, prev_last = monthrange(prev_year, prev_month)
         prev_end = date(prev_year, prev_month, prev_last)
 
-        prev_expenses = session.execute(
-            select(Expense)
-            .where(Expense.expense_date >= prev_start)
-            .where(Expense.expense_date <= prev_end)
-        ).scalars().all()
+        prev_expenses = (
+            session.execute(
+                select(Expense)
+                .where(Expense.expense_date >= prev_start)
+                .where(Expense.expense_date <= prev_end)
+            )
+            .scalars()
+            .all()
+        )
 
         prev_by_category = defaultdict(float)
         for exp in prev_expenses:
@@ -157,17 +165,19 @@ class ExpenseAnalyzer:
                 trend = "new" if data["amount"] > 0 else "stable"
                 trend_pct = 100 if data["amount"] > 0 else 0
 
-            summaries.append(CategorySummary(
-                category=category,
-                category_name=cat_name,
-                total_amount=data["amount"],
-                expense_count=data["count"],
-                average_amount=avg,
-                budget_limit=budget_limit,
-                budget_used_percentage=budget_pct,
-                trend=trend,
-                trend_percentage=trend_pct,
-            ))
+            summaries.append(
+                CategorySummary(
+                    category=category,
+                    category_name=cat_name,
+                    total_amount=data["amount"],
+                    expense_count=data["count"],
+                    average_amount=avg,
+                    budget_limit=budget_limit,
+                    budget_used_percentage=budget_pct,
+                    trend=trend,
+                    trend_percentage=trend_pct,
+                )
+            )
 
         return summaries
 
@@ -178,11 +188,7 @@ class ExpenseAnalyzer:
             provider = expense.provider_name or "Desconhecido"
             provider_totals[provider] += expense.amount
 
-        sorted_providers = sorted(
-            provider_totals.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
+        sorted_providers = sorted(provider_totals.items(), key=lambda x: x[1], reverse=True)
 
         return sorted_providers[:10]
 
@@ -195,13 +201,17 @@ class ExpenseAnalyzer:
         start_dt = datetime.combine(start_date, datetime.min.time())
         end_dt = datetime.combine(end_date, datetime.max.time())
 
-        return list(session.execute(
-            select(Alert)
-            .where(Alert.created_at >= start_dt)
-            .where(Alert.created_at <= end_dt)
-            .where(Alert.is_dismissed == False)
-            .order_by(Alert.created_at.desc())
-        ).scalars().all())
+        return list(
+            session.execute(
+                select(Alert)
+                .where(Alert.created_at >= start_dt)
+                .where(Alert.created_at <= end_dt)
+                .where(not Alert.is_dismissed)
+                .order_by(Alert.created_at.desc())
+            )
+            .scalars()
+            .all()
+        )
 
     def _compare_with_previous(
         self,
@@ -249,21 +259,23 @@ class ExpenseAnalyzer:
 
         with get_session() as session:
             # Get active budgets
-            budgets = session.execute(
-                select(Budget).where(Budget.is_active == True)
-            ).scalars().all()
+            budgets = (
+                session.execute(select(Budget).where(Budget.is_active)).scalars().all()
+            )
 
             # Get month expenses by category
             start_date = date(year, month, 1)
             _, last_day = monthrange(year, month)
             end_date = date(year, month, last_day)
 
-            category_totals = dict(session.execute(
-                select(Expense.category, func.sum(Expense.amount))
-                .where(Expense.expense_date >= start_date)
-                .where(Expense.expense_date <= end_date)
-                .group_by(Expense.category)
-            ).all())
+            category_totals = dict(
+                session.execute(
+                    select(Expense.category, func.sum(Expense.amount))
+                    .where(Expense.expense_date >= start_date)
+                    .where(Expense.expense_date <= end_date)
+                    .group_by(Expense.category)
+                ).all()
+            )
 
             for budget in budgets:
                 spent = category_totals.get(budget.category, 0.0)
@@ -315,24 +327,26 @@ class ExpenseAnalyzer:
             end_date = date(year, month, last_day)
 
             # Get month expenses
-            month_expenses = session.execute(
-                select(Expense)
-                .where(Expense.expense_date >= start_date)
-                .where(Expense.expense_date <= end_date)
-            ).scalars().all()
+            month_expenses = (
+                session.execute(
+                    select(Expense)
+                    .where(Expense.expense_date >= start_date)
+                    .where(Expense.expense_date <= end_date)
+                )
+                .scalars()
+                .all()
+            )
 
             # Get historical averages (last 6 months)
             hist_start = start_date - timedelta(days=180)
-            hist_avg = dict(session.execute(
-                select(
-                    Expense.category,
-                    func.avg(Expense.amount),
-                    func.stddev(Expense.amount)
-                )
-                .where(Expense.expense_date >= hist_start)
-                .where(Expense.expense_date < start_date)
-                .group_by(Expense.category)
-            ).all())
+            hist_avg = dict(
+                session.execute(
+                    select(Expense.category, func.avg(Expense.amount), func.stddev(Expense.amount))
+                    .where(Expense.expense_date >= hist_start)
+                    .where(Expense.expense_date < start_date)
+                    .group_by(Expense.category)
+                ).all()
+            )
 
             # Check each expense
             for expense in month_expenses:
@@ -386,17 +400,22 @@ class ExpenseAnalyzer:
                 end_date = date(year, month, last_day)
 
                 # Get total for month
-                total = session.execute(
-                    select(func.sum(Expense.amount))
-                    .where(Expense.expense_date >= start_date)
-                    .where(Expense.expense_date <= end_date)
-                ).scalar() or 0.0
+                total = (
+                    session.execute(
+                        select(func.sum(Expense.amount))
+                        .where(Expense.expense_date >= start_date)
+                        .where(Expense.expense_date <= end_date)
+                    ).scalar()
+                    or 0.0
+                )
 
-                trends["monthly_totals"].append({
-                    "year": year,
-                    "month": month,
-                    "total": total,
-                })
+                trends["monthly_totals"].append(
+                    {
+                        "year": year,
+                        "month": month,
+                        "total": total,
+                    }
+                )
 
                 # Get by category
                 cat_totals = session.execute(
@@ -429,11 +448,15 @@ class ExpenseAnalyzer:
     def get_pending_alerts(self) -> list[Alert]:
         """Get all unread/undismissed alerts."""
         with get_session() as session:
-            return list(session.execute(
-                select(Alert)
-                .where(Alert.is_dismissed == False)
-                .order_by(Alert.created_at.desc())
-            ).scalars().all())
+            return list(
+                session.execute(
+                    select(Alert)
+                    .where(not Alert.is_dismissed)
+                    .order_by(Alert.created_at.desc())
+                )
+                .scalars()
+                .all()
+            )
 
     def dismiss_alert(self, alert_id: int) -> bool:
         """Dismiss an alert."""

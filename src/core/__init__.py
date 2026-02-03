@@ -1,5 +1,6 @@
 """Core utilities and shared functionality."""
 
+from .category_manager import Category, CategoryManager, get_category_manager
 from .classification_rules import (
     ClassificationRule,
     ClassificationRulesEngine,
@@ -51,4 +52,7 @@ __all__ = [
     "MatchSource",
     "MatchType",
     "get_rules_engine",
+    "CategoryManager",
+    "Category",
+    "get_category_manager",
 ]

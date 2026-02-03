@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -139,8 +138,19 @@ class ReportData:
     def period_name(self) -> str:
         """Get human-readable period name."""
         months_pt = [
-            "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+            "",
+            "Janeiro",
+            "Fevereiro",
+            "Março",
+            "Abril",
+            "Maio",
+            "Junho",
+            "Julho",
+            "Agosto",
+            "Setembro",
+            "Outubro",
+            "Novembro",
+            "Dezembro",
         ]
         return f"{months_pt[self.month]} {self.year}"
 

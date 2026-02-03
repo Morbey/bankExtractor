@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from src.core import get_logger, settings
 
-from .classifier import ClassificationResult, classify_document
+from .classifier import classify_document
 from .models import (
     Document,
     DocumentStatus,
@@ -21,7 +21,7 @@ from .models import (
     get_session,
     init_db,
 )
-from .parser import PDFParser, ParsedDocument
+from .parser import PDFParser
 
 logger = get_logger("organizer.indexer")
 
@@ -165,12 +165,14 @@ class DocumentIndexer:
             file_hash=parsed.file_hash,
             document_type=classification.document_type.value,
             status=DocumentStatus.PROCESSED.value,
-            document_date=datetime.combine(parsed.document_date, datetime.min.time())
-            if parsed.document_date
-            else None,
-            due_date=datetime.combine(parsed.due_date, datetime.min.time())
-            if parsed.due_date
-            else None,
+            document_date=(
+                datetime.combine(parsed.document_date, datetime.min.time())
+                if parsed.document_date
+                else None
+            ),
+            due_date=(
+                datetime.combine(parsed.due_date, datetime.min.time()) if parsed.due_date else None
+            ),
             amount=parsed.amount,
             reference=parsed.reference,
             text_content=parsed.text_content[:50000] if parsed.text_content else None,  # Limit size
@@ -216,9 +218,7 @@ class DocumentIndexer:
 
     def _get_or_create_tag(self, session: Session, name: str) -> Tag:
         """Get existing tag or create new one."""
-        tag = session.execute(
-            select(Tag).where(Tag.name == name)
-        ).scalar_one_or_none()
+        tag = session.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
 
         if not tag:
             tag = Tag(name=name)
@@ -271,9 +271,7 @@ class DocumentIndexer:
 
             # Provider filter
             if provider_name:
-                stmt = stmt.join(Document.provider).where(
-                    Provider.name.ilike(f"%{provider_name}%")
-                )
+                stmt = stmt.join(Document.provider).where(Provider.name.ilike(f"%{provider_name}%"))
 
             # Date filters
             if start_date:
@@ -315,9 +313,9 @@ class DocumentIndexer:
             # Count by type
             by_type = {}
             for doc_type in DocumentType:
-                count = session.query(Document).filter(
-                    Document.document_type == doc_type.value
-                ).count()
+                count = (
+                    session.query(Document).filter(Document.document_type == doc_type.value).count()
+                )
                 if count > 0:
                     by_type[doc_type.value] = count
 
@@ -330,9 +328,12 @@ class DocumentIndexer:
                     by_provider[provider.name] = count
 
             # Total amount
-            total_amount = session.query(Document).with_entities(
-                Document.amount
-            ).filter(Document.amount.isnot(None)).all()
+            total_amount = (
+                session.query(Document)
+                .with_entities(Document.amount)
+                .filter(Document.amount.isnot(None))
+                .all()
+            )
             sum_amount = sum(a[0] for a in total_amount if a[0])
 
             return {

@@ -15,7 +15,6 @@ from .inbox_models import (
     AttachmentStatus,
     Email,
     get_engine,
-    get_session,
     init_db,
 )
 
@@ -288,10 +287,7 @@ class InboxDatabase:
             Dictionary mapping status to count.
         """
         with self._get_session() as session:
-            stmt = (
-                select(Attachment.status, func.count(Attachment.id))
-                .group_by(Attachment.status)
-            )
+            stmt = select(Attachment.status, func.count(Attachment.id)).group_by(Attachment.status)
             result = session.execute(stmt).all()
 
             counts = {status.value: 0 for status in AttachmentStatus}
@@ -548,28 +544,21 @@ class InboxDatabase:
         """
         with self._get_session() as session:
             # Total emails
-            total_emails = session.execute(
-                select(func.count(Email.id))
-            ).scalar() or 0
+            total_emails = session.execute(select(func.count(Email.id))).scalar() or 0
 
             # Total attachments
-            total_attachments = session.execute(
-                select(func.count(Attachment.id))
-            ).scalar() or 0
+            total_attachments = session.execute(select(func.count(Attachment.id))).scalar() or 0
 
             # By status
             status_counts = self.get_status_counts()
 
             # By provider
             provider_counts = session.execute(
-                select(Email.provider, func.count(Email.id))
-                .group_by(Email.provider)
+                select(Email.provider, func.count(Email.id)).group_by(Email.provider)
             ).all()
 
             # Total file size
-            total_size = session.execute(
-                select(func.sum(Attachment.file_size))
-            ).scalar() or 0
+            total_size = session.execute(select(func.sum(Attachment.file_size))).scalar() or 0
 
             return {
                 "total_emails": total_emails,

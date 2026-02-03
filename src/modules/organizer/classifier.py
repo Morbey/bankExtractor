@@ -139,7 +139,11 @@ PROVIDER_PATTERNS = {
     },
     # Government
     "Finanças": {
-        "patterns": [r"autoridade\s*tributária", r"portal\s*das\s*finanças", r"at\s*-\s*autoridade"],
+        "patterns": [
+            r"autoridade\s*tributária",
+            r"portal\s*das\s*finanças",
+            r"at\s*-\s*autoridade",
+        ],
         "category": "governo",
         "tags": ["impostos", "finanças"],
     },

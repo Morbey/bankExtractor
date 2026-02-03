@@ -54,9 +54,24 @@ class EmailClient:
 
     # Common invoice senders (domains and patterns)
     INVOICE_SENDERS = [
-        "vodafone", "nos.pt", "meo", "edp", "galp", "viaverde", "brisa",
-        "fidelidade", "allianz", "epal", "endesa", "fatura", "invoice",
-        "factura", "recibo", "receipt", "billing", "pagamento",
+        "vodafone",
+        "nos.pt",
+        "meo",
+        "edp",
+        "galp",
+        "viaverde",
+        "brisa",
+        "fidelidade",
+        "allianz",
+        "epal",
+        "endesa",
+        "fatura",
+        "invoice",
+        "factura",
+        "recibo",
+        "receipt",
+        "billing",
+        "pagamento",
     ]
 
     def __init__(
@@ -304,9 +319,7 @@ class EmailClient:
 
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
-                        invoice_email = self._parse_email(
-                            response_part[1], msg_id.decode()
-                        )
+                        invoice_email = self._parse_email(response_part[1], msg_id.decode())
 
                         # Filter by attachments
                         if only_with_attachments and not invoice_email.attachments:
@@ -336,8 +349,7 @@ class EmailClient:
         for att in email_obj.attachments:
             filename_lower = att.filename.lower()
             if any(
-                kw in filename_lower
-                for kw in ["fatura", "factura", "invoice", "recibo", "receipt"]
+                kw in filename_lower for kw in ["fatura", "factura", "invoice", "recibo", "receipt"]
             ):
                 return True
 
@@ -396,9 +408,7 @@ class EmailClient:
 
         for att in attachments:
             # Create safe filename
-            safe_filename = "".join(
-                c if c.isalnum() or c in ".-_" else "_" for c in att.filename
-            )
+            safe_filename = "".join(c if c.isalnum() or c in ".-_" else "_" for c in att.filename)
 
             # Add date prefix for uniqueness
             date_prefix = invoice_email.date.strftime("%Y%m%d")

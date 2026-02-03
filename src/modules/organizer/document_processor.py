@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 from rich.table import Table
 
 from src.core.config import settings
@@ -29,7 +28,7 @@ from src.core.document_registry import (
     get_document_registry,
 )
 from src.core.logger import get_logger
-from src.core.transfer_manager import TransferInfo, get_transfer_manager
+from src.core.transfer_manager import get_transfer_manager
 from src.modules.invoices.pdf_parser import PDFInvoiceParser
 
 console = Console()
@@ -447,7 +446,9 @@ class DocumentProcessor:
             else:
                 shutil.copy2(str(file_path), str(dest_path))
 
-            logger.info(f"{'Movido' if move else 'Copiado'}: {file_path.name} -> {dest_path.parent.name}/")
+            logger.info(
+                f"{'Movido' if move else 'Copiado'}: {file_path.name} -> {dest_path.parent.name}/"
+            )
 
             return ProcessedDocument(
                 file_path=file_path,
@@ -807,7 +808,9 @@ class DocumentProcessor:
             results.append(result)
 
             if result.success:
-                console.print(f"  [green]✓[/green] -> {result.destination_path.parent.name if result.destination_path else 'OK'}/")
+                console.print(
+                    f"  [green]✓[/green] -> {result.destination_path.parent.name if result.destination_path else 'OK'}/"
+                )
             elif result.pending_reason:
                 console.print(f"  [yellow]⏳[/yellow] Pendente: {result.pending_reason}")
             else:
@@ -818,7 +821,7 @@ class DocumentProcessor:
         pending = sum(1 for r in results if r.pending_reason)
         failed = sum(1 for r in results if r.error)
 
-        console.print(f"\n[bold]Resumo:[/bold]")
+        console.print("\n[bold]Resumo:[/bold]")
         console.print(f"  [green]Sucesso: {successful}[/green]")
         console.print(f"  [yellow]Pendente: {pending}[/yellow]")
         console.print(f"  [red]Erro: {failed}[/red]")
@@ -860,6 +863,6 @@ class DocumentProcessor:
             if result.success:
                 # Remove from pending
                 self.registry.remove_from_pending(doc["id"])
-                console.print(f"  [green]✓[/green] Processado com sucesso")
+                console.print("  [green]✓[/green] Processado com sucesso")
 
         return results

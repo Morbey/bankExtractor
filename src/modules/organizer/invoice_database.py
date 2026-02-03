@@ -5,9 +5,8 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, Boolean, func
-from sqlalchemy.orm import Session
 
-from src.core import get_logger, settings
+from src.core import get_logger
 
 from .models import get_session, init_db, Base
 
@@ -75,7 +74,9 @@ class InvoiceDatabase:
 
                 record = InvoiceRecord(
                     file_path=str(file_path),
-                    file_name=file_path.name if isinstance(file_path, Path) else Path(file_path).name,
+                    file_name=(
+                        file_path.name if isinstance(file_path, Path) else Path(file_path).name
+                    ),
                     category=cat_value,
                     nif_emitente=nif_emitente,
                     invoice_date=invoice_date,
@@ -104,9 +105,11 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                count = session.query(InvoiceRecord).filter(
-                    InvoiceRecord.file_path == str(file_path)
-                ).count()
+                count = (
+                    session.query(InvoiceRecord)
+                    .filter(InvoiceRecord.file_path == str(file_path))
+                    .count()
+                )
                 return count > 0
         except Exception as e:
             self.logger.error(f"Error checking invoice existence: {e}")
@@ -123,9 +126,11 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                return session.query(InvoiceRecord).filter(
-                    InvoiceRecord.file_path == str(file_path)
-                ).first()
+                return (
+                    session.query(InvoiceRecord)
+                    .filter(InvoiceRecord.file_path == str(file_path))
+                    .first()
+                )
         except Exception as e:
             self.logger.error(f"Error getting invoice: {e}")
             return None
@@ -141,9 +146,11 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                invoice = session.query(InvoiceRecord).filter(
-                    InvoiceRecord.file_path == str(file_path)
-                ).first()
+                invoice = (
+                    session.query(InvoiceRecord)
+                    .filter(InvoiceRecord.file_path == str(file_path))
+                    .first()
+                )
                 if invoice:
                     invoice.is_paid = True
                     session.commit()
@@ -162,19 +169,18 @@ class InvoiceDatabase:
         try:
             with get_session() as session:
                 total = session.query(InvoiceRecord).count()
-                paid = session.query(InvoiceRecord).filter(
-                    InvoiceRecord.is_paid == True
-                ).count()
+                paid = session.query(InvoiceRecord).filter(InvoiceRecord.is_paid.is_(True)).count()
                 unpaid = total - paid
 
                 total_amount = session.query(func.sum(InvoiceRecord.total_amount)).scalar() or 0.0
 
                 # By category
                 by_category = {}
-                category_counts = session.query(
-                    InvoiceRecord.category,
-                    func.count(InvoiceRecord.id)
-                ).group_by(InvoiceRecord.category).all()
+                category_counts = (
+                    session.query(InvoiceRecord.category, func.count(InvoiceRecord.id))
+                    .group_by(InvoiceRecord.category)
+                    .all()
+                )
                 for cat, count in category_counts:
                     by_category[cat] = count
 
@@ -206,9 +212,7 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                return session.query(InvoiceRecord).filter(
-                    InvoiceRecord.category == category
-                ).all()
+                return session.query(InvoiceRecord).filter(InvoiceRecord.category == category).all()
         except Exception as e:
             self.logger.error(f"Error getting invoices by category: {e}")
             return []
@@ -229,10 +233,14 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                return session.query(InvoiceRecord).filter(
-                    InvoiceRecord.invoice_date >= start_date,
-                    InvoiceRecord.invoice_date <= end_date,
-                ).all()
+                return (
+                    session.query(InvoiceRecord)
+                    .filter(
+                        InvoiceRecord.invoice_date >= start_date,
+                        InvoiceRecord.invoice_date <= end_date,
+                    )
+                    .all()
+                )
         except Exception as e:
             self.logger.error(f"Error getting invoices by date range: {e}")
             return []
@@ -245,9 +253,7 @@ class InvoiceDatabase:
         """
         try:
             with get_session() as session:
-                return session.query(InvoiceRecord).filter(
-                    InvoiceRecord.is_paid == False
-                ).all()
+                return session.query(InvoiceRecord).filter(InvoiceRecord.is_paid.is_(False)).all()
         except Exception as e:
             self.logger.error(f"Error getting unpaid invoices: {e}")
             return []

@@ -5,399 +5,15 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 from rich.table import Table
 
 from src import __version__
 from src.cli.common import console, parse_date
 from src.core import CredentialManager, settings
-from src.core.categories import InvoiceCategory, InvoiceCategorizer
-from src.modules.invoices import EMAIL_PROVIDERS, EmailClient, EmailFilter, InvoiceDownloader, _DOWNLOAD_COMPLETE
-from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer
-
-
-def gerir_faturas(
-    acao: str = typer.Argument(
-        ...,
-        help="Ação: organizar, listar, stats, categorias",
-    ),
-    pasta: Optional[str] = typer.Option(
-        None,
-        "--pasta", "-p",
-        help="Pasta de origem para organizar ficheiros.",
-    ),
-    destino: Optional[str] = typer.Option(
-        None,
-        "--destino", "-d",
-        help="Pasta de destino para ficheiros organizados.",
-    ),
-    mover: bool = typer.Option(
-        False,
-        "--mover", "-m",
-        help="Mover ficheiros em vez de copiar.",
-    ),
-    categoria: Optional[str] = typer.Option(
-        None,
-        "--categoria", "-c",
-        help="Filtrar por categoria.",
-    ),
-    ano: Optional[int] = typer.Option(
-        None,
-        "--ano", "-a",
-        help="Filtrar por ano.",
-    ),
-    sem_ano: bool = typer.Option(
-        False,
-        "--sem-ano",
-        help="Não criar subpastas por ano.",
-    ),
-):
-    """Gerir faturas - organização e estatísticas."""
-    console.print(Panel.fit(
-        f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
-        "Gestão de Faturas",
-        border_style="green",
-    ))
-
-    acao_lower = acao.lower()
-
-    if acao_lower == "organizar":
-        _faturas_organizar(pasta, destino, mover, not sem_ano)
-    elif acao_lower == "listar":
-        _faturas_listar(categoria, ano, destino)
-    elif acao_lower == "stats":
-        _faturas_stats(destino)
-    elif acao_lower == "categorias":
-        _faturas_categorias()
-    else:
-        console.print(f"[red]Ação desconhecida: {acao}[/red]")
-        console.print("Ações disponíveis: organizar, listar, stats, categorias")
-        console.print("[dim]Para download de faturas por email use: bank-extractor faturas[/dim]")
-        raise typer.Exit(1)
-
-
-def _faturas_email():
-    """Download invoices from email."""
-    console.print("\n[bold cyan]Download de faturas por email[/bold cyan]\n")
-
-    # Get email credentials
-    server = CredentialManager.get_or_prompt("email", "server", "Servidor IMAP (ex: imap.gmail.com)")
-    username = CredentialManager.get_or_prompt("email", "username", "Email")
-    password = CredentialManager.get_or_prompt("email", "password", "Password", password=True)
-
-    # Date range
-    console.print("\n[dim]Deixe em branco para pesquisar os últimos 30 dias[/dim]")
-    inicio_str = Prompt.ask("Data início (DD-MM-YYYY)", default="")
-    fim_str = Prompt.ask("Data fim (DD-MM-YYYY)", default="")
-
-    start_date = parse_date(inicio_str) if inicio_str else None
-    end_date = parse_date(fim_str) if fim_str else None
-
-    # If no dates, default to last 30 days
-    if not start_date:
-        start_date = date.today() - timedelta(days=30)
-
-    console.print(f"\n[dim]Pesquisando desde {start_date}...[/dim]\n")
-
-    try:
-        with EmailClient(server, username, password) as client:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-            ) as progress:
-                task = progress.add_task("Pesquisando emails...", total=None)
-
-                invoices = client.search_invoices(
-                    since_date=start_date,
-                    before_date=end_date,
-                )
-
-                progress.update(task, description=f"Encontradas {len(invoices)} faturas")
-
-            if not invoices:
-                console.print("[yellow]Nenhuma fatura encontrada.[/yellow]")
-                return
-
-            # Display found invoices
-            table = Table(title="Faturas Encontradas")
-            table.add_column("#", style="dim")
-            table.add_column("Data", style="cyan")
-            table.add_column("Remetente", style="green")
-            table.add_column("Assunto", style="white", max_width=40)
-            table.add_column("PDFs", style="yellow")
-
-            for i, inv in enumerate(invoices, 1):
-                table.add_row(
-                    str(i),
-                    inv.date.strftime("%Y-%m-%d"),
-                    inv.sender[:30] + "..." if len(inv.sender) > 30 else inv.sender,
-                    inv.subject[:40] + "..." if len(inv.subject) > 40 else inv.subject,
-                    str(len(inv.pdf_attachments)),
-                )
-
-            console.print(table)
-
-            # Confirm download
-            if not Confirm.ask("\nDescarregar e organizar estas faturas?"):
-                return
-
-            # Download and organize
-            organizer = InvoiceOrganizer()
-            db = InvoiceDatabase()
-            downloaded = 0
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-            ) as progress:
-                task = progress.add_task("Processando...", total=len(invoices))
-
-                for inv in invoices:
-                    # Save attachments to temp location
-                    temp_dir = settings.data_dir / "temp"
-                    saved_files = client.save_attachments(inv, temp_dir)
-
-                    # Organize each file
-                    for file_path in saved_files:
-                        result = organizer.organize_file(
-                            file_path,
-                            sender=inv.sender,
-                            subject=inv.subject,
-                            move=True,
-                        )
-
-                        if result.success and result.metadata:
-                            # Add to database
-                            db.add_invoice(
-                                file_path=result.destination_path,
-                                category=result.category,
-                                nif_emitente=result.metadata.nif_emitente,
-                                invoice_date=result.metadata.invoice_date,
-                                total_amount=result.metadata.total_amount,
-                                email_sender=inv.sender,
-                                email_subject=inv.subject,
-                                email_date=inv.date,
-                                email_message_id=inv.message_id,
-                            )
-                            downloaded += 1
-
-                    progress.advance(task)
-
-            console.print(f"\n[green]✓ {downloaded} faturas descarregadas e organizadas.[/green]")
-
-    except Exception as e:
-        console.print(f"[red]Erro: {e}[/red]")
-        raise typer.Exit(1)
-
-
-def _faturas_organizar(
-    pasta: Optional[str],
-    destino: Optional[str],
-    mover: bool,
-    organize_by_year: bool = True,
-):
-    """Organize invoice files from a directory."""
-    source_dir = Path(pasta) if pasta else settings.faturas_dir
-    dest_dir = Path(destino) if destino else None
-
-    if not source_dir.exists():
-        console.print(f"[red]Pasta não encontrada: {source_dir}[/red]")
-        raise typer.Exit(1)
-
-    console.print(f"\n[cyan]Organizando faturas de: {source_dir}[/cyan]")
-    if dest_dir:
-        console.print(f"[cyan]Destino: {dest_dir}[/cyan]")
-    console.print(f"[dim]Organização por ano: {'Sim' if organize_by_year else 'Não'}[/dim]\n")
-
-    organizer = InvoiceOrganizer(base_dir=dest_dir, organize_by_year=organize_by_year)
-    db = InvoiceDatabase()
-
-    # Find PDF files
-    pdf_files = list(source_dir.glob("*.pdf"))
-
-    if not pdf_files:
-        console.print("[yellow]Nenhum ficheiro PDF encontrado na raiz da pasta.[/yellow]")
-        console.print("[dim]Os ficheiros já organizados em subpastas são ignorados.[/dim]")
-        return
-
-    console.print(f"Encontrados {len(pdf_files)} ficheiros PDF\n")
-
-    if not Confirm.ask(f"{'Mover' if mover else 'Copiar'} e organizar estes ficheiros?"):
-        return
-
-    # Process files
-    results = organizer.organize_directory(source_dir, move=mover)
-
-    # Summary by category
-    summary: dict[InvoiceCategory, int] = {}
-    errors = []
-
-    for result in results:
-        if result.success:
-            summary[result.category] = summary.get(result.category, 0) + 1
-
-            # Add to database
-            if result.metadata:
-                if not db.invoice_exists(result.destination_path):
-                    db.add_invoice(
-                        file_path=result.destination_path,
-                        category=result.category,
-                        nif_emitente=result.metadata.nif_emitente,
-                        invoice_date=result.metadata.invoice_date,
-                        total_amount=result.metadata.total_amount,
-                    )
-        else:
-            errors.append(result)
-
-    # Display summary
-    if summary:
-        table = Table(title="Resumo da Organização")
-        table.add_column("Categoria", style="cyan")
-        table.add_column("Ficheiros", style="green", justify="right")
-
-        for cat, count in sorted(summary.items(), key=lambda x: x[1], reverse=True):
-            table.add_row(cat.value, str(count))
-
-        table.add_row("─" * 15, "─" * 5)
-        table.add_row("[bold]Total[/bold]", f"[bold]{sum(summary.values())}[/bold]")
-
-        console.print(table)
-
-    if errors:
-        console.print(f"\n[red]{len(errors)} ficheiros com erros.[/red]")
-
-
-def _faturas_listar(
-    categoria: Optional[str],
-    ano: Optional[int] = None,
-    destino: Optional[str] = None,
-):
-    """List organized invoices."""
-    dest_dir = Path(destino) if destino else None
-    organizer = InvoiceOrganizer(base_dir=dest_dir)
-
-    if categoria:
-        try:
-            cat = InvoiceCategory(categoria.lower())
-            files = organizer.list_category_files(cat, year=ano)
-
-            title = f"Faturas em '{cat.value}'"
-            if ano:
-                title += f" ({ano})"
-            console.print(f"\n[cyan]{title}:[/cyan]\n")
-
-            for f in files:
-                # Show relative path from category folder
-                console.print(f"  {f.relative_to(organizer.base_dir)}")
-
-            console.print(f"\n[dim]Total: {len(files)} ficheiros[/dim]")
-
-        except ValueError:
-            console.print(f"[red]Categoria desconhecida: {categoria}[/red]")
-            console.print(f"Categorias: {', '.join(c.value for c in InvoiceCategory)}")
-    else:
-        # Show all categories with counts
-        stats = organizer.get_category_stats()
-
-        if not stats:
-            console.print("[yellow]Nenhuma fatura organizada ainda.[/yellow]")
-            return
-
-        table = Table(title="Faturas por Categoria")
-        table.add_column("Categoria", style="cyan")
-        table.add_column("Ficheiros", style="green", justify="right")
-        table.add_column("Pasta", style="dim")
-
-        total = 0
-        for cat, count in sorted(stats.items(), key=lambda x: x[1], reverse=True):
-            folder = settings.faturas_dir / cat.value
-            table.add_row(cat.value, str(count), str(folder))
-            total += count
-
-        table.add_row("─" * 15, "─" * 5, "")
-        table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]", "")
-
-        console.print(table)
-
-
-def _faturas_stats(destino: Optional[str] = None):
-    """Show invoice statistics from database."""
-    db = InvoiceDatabase()
-    stats = db.get_statistics()
-    dest_dir = Path(destino) if destino else None
-    organizer = InvoiceOrganizer(base_dir=dest_dir)
-
-    console.print("\n[bold cyan]Estatísticas de Faturas[/bold cyan]\n")
-
-    # General stats
-    table = Table(title="Resumo Geral")
-    table.add_column("Métrica", style="cyan")
-    table.add_column("Valor", style="green", justify="right")
-
-    table.add_row("Total de faturas", str(stats["total_invoices"]))
-    table.add_row("Valor total", f"€ {stats['total_amount']:.2f}")
-    table.add_row("Pagas", str(stats["paid_count"]))
-    table.add_row("Por pagar", str(stats["unpaid_count"]))
-
-    console.print(table)
-
-    # By category
-    if stats["by_category"]:
-        console.print()
-        cat_table = Table(title="Por Categoria")
-        cat_table.add_column("Categoria", style="cyan")
-        cat_table.add_column("Quantidade", style="green", justify="right")
-
-        for cat_name, count in sorted(
-            stats["by_category"].items(), key=lambda x: x[1], reverse=True
-        ):
-            cat_table.add_row(cat_name, str(count))
-
-        console.print(cat_table)
-
-
-def _faturas_categorias():
-    """Show available categories."""
-    console.print("\n[bold cyan]Categorias Disponíveis[/bold cyan]\n")
-
-    categorizer = InvoiceCategorizer()
-
-    table = Table()
-    table.add_column("Categoria", style="cyan")
-    table.add_column("Pasta", style="green")
-    table.add_column("Exemplos de Fornecedores", style="dim")
-
-    # Map categories to example providers
-    examples = {
-        InvoiceCategory.COMUNICACOES: "Vodafone, NOS, MEO",
-        InvoiceCategory.VIA_VERDE: "Via Verde, Brisa",
-        InvoiceCategory.ENERGIA: "EDP, Galp, Endesa",
-        InvoiceCategory.AGUA: "EPAL, Águas de Portugal",
-        InvoiceCategory.COMBUSTIVEL: "Galp, BP, Repsol",
-        InvoiceCategory.SEGUROS: "Fidelidade, Allianz",
-        InvoiceCategory.SAUDE: "Farmácias, Clínicas",
-        InvoiceCategory.SOFTWARE: "Microsoft, Google, Adobe",
-        InvoiceCategory.MATERIAL_ESCRITORIO: "Staples, Note!",
-        InvoiceCategory.ALIMENTACAO: "Continente, Pingo Doce",
-        InvoiceCategory.TRANSPORTES: "Uber, CP, Metro",
-        InvoiceCategory.ALOJAMENTO: "Booking, Airbnb",
-        InvoiceCategory.SERVICOS: "Serviços diversos",
-        InvoiceCategory.OUTROS: "Não categorizados",
-    }
-
-    for cat in InvoiceCategory:
-        table.add_row(
-            cat.value,
-            str(settings.faturas_dir / cat.value),
-            examples.get(cat, ""),
-        )
-
-    console.print(table)
+from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader, _DOWNLOAD_COMPLETE
 
 
 def faturas(
@@ -407,17 +23,20 @@ def faturas(
     ),
     dias: int = typer.Option(
         settings.invoice_days_default,
-        "--dias", "-d",
+        "--dias",
+        "-d",
         help="Número de dias a pesquisar (padrão: 30)",
     ),
     inicio: Optional[str] = typer.Option(
         None,
-        "--inicio", "-i",
+        "--inicio",
+        "-i",
         help="Data início (DD-MM-YYYY). Sobrepõe --dias.",
     ),
     fim: Optional[str] = typer.Option(
         None,
-        "--fim", "-f",
+        "--fim",
+        "-f",
         help="Data fim (DD-MM-YYYY). Default: hoje.",
     ),
     conta: Optional[str] = typer.Option(
@@ -427,17 +46,20 @@ def faturas(
     ),
     excluir: Optional[list[str]] = typer.Option(
         None,
-        "--excluir", "-e",
+        "--excluir",
+        "-e",
         help="Excluir provider(s) específico(s). Pode usar múltiplas vezes: -e gmail -e hotmail_empresa",
     ),
     selecionar: bool = typer.Option(
         False,
-        "--selecionar", "-s",
+        "--selecionar",
+        "-s",
         help="Modo interativo: escolher quais contas usar",
     ),
     config_creds: bool = typer.Option(
         False,
-        "--config", "-c",
+        "--config",
+        "-c",
         help="Configurar credenciais de email",
     ),
     organizar: bool = typer.Option(
@@ -447,23 +69,27 @@ def faturas(
     ),
     mover: bool = typer.Option(
         False,
-        "--mover", "-m",
+        "--mover",
+        "-m",
         help="Mover ficheiros em vez de copiar ao organizar",
     ),
     paralelo: bool = typer.Option(
         False,
-        "--paralelo", "-p",
+        "--paralelo",
+        "-p",
         help="Modo paralelo: processar faturas enquanto o download continua",
     ),
 ):
     """Descarregar faturas do email."""
     from src.modules.invoices import InvoiceProcessor
 
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Download de faturas por email",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+            "Download de faturas por email",
+            border_style="blue",
+        )
+    )
 
     # Handle credential configuration
     if config_creds:
@@ -502,11 +128,13 @@ def faturas(
 
     end_date = parse_date(fim) if fim else date.today()
 
-    console.print(f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]")
+    console.print(
+        f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]"
+    )
     if conta:
         console.print(f"[cyan]Conta: {conta}[/cyan]")
     if paralelo and organizar:
-        console.print(f"[cyan]Modo: Paralelo (processar enquanto descarrega)[/cyan]")
+        console.print("[cyan]Modo: Paralelo (processar enquanto descarrega)[/cyan]")
 
     # Create downloader and inbox database
     from src.modules.invoices.inbox_db import InboxDatabase
@@ -546,15 +174,29 @@ def faturas(
                 """Callback to update progress display."""
                 if stage == "connect":
                     if current >= 1:
-                        progress.update(current_task, description=f"[green]✓ Ligado[/green]", total=None)
+                        progress.update(
+                            current_task, description="[green]✓ Ligado[/green]", total=None
+                        )
                     else:
                         progress.update(current_task, description=f"[cyan]{message}", total=None)
                 elif stage == "search":
-                    progress.update(current_task, description=f"[yellow]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task,
+                        description=f"[yellow]{message}",
+                        total=total,
+                        completed=current,
+                    )
                 elif stage == "fetch":
-                    progress.update(current_task, description=f"[blue]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task, description=f"[blue]{message}", total=total, completed=current
+                    )
                 elif stage == "download":
-                    progress.update(current_task, description=f"[green]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task,
+                        description=f"[green]{message}",
+                        total=total,
+                        completed=current,
+                    )
 
             try:
                 # Use scrape_to_inbox for automatic deduplication
@@ -577,28 +219,36 @@ def faturas(
                 elif es > 0:
                     console.print(f"  [dim]Todos os {es} emails já existiam na BD[/dim]")
                 else:
-                    console.print(f"  [dim]Nenhuma fatura encontrada[/dim]")
+                    console.print("  [dim]Nenhuma fatura encontrada[/dim]")
 
             except Exception as e:
                 console.print(f"[red]Erro: {e}[/red]")
 
     if total_attachments_added == 0:
         if total_attachments_skipped > 0 or total_emails_skipped > 0:
-            console.print(f"\n[yellow]Nenhuma fatura nova. {total_attachments_skipped + total_emails_skipped} já existiam na BD.[/yellow]")
+            console.print(
+                f"\n[yellow]Nenhuma fatura nova. {total_attachments_skipped + total_emails_skipped} já existiam na BD.[/yellow]"
+            )
         else:
             console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
         return
 
     # Show download summary
-    console.print(f"\n[green]Adicionadas {total_attachments_added} faturas novas à BD inbox[/green]")
+    console.print(
+        f"\n[green]Adicionadas {total_attachments_added} faturas novas à BD inbox[/green]"
+    )
     if total_attachments_skipped > 0:
         console.print(f"[dim]{total_attachments_skipped} duplicadas ignoradas[/dim]")
 
     # Process and organize invoices from inbox database
     if organizar:
-        console.print(f"\n[bold cyan]A organizar faturas...[/bold cyan]")
-        console.print("[dim]Para cada fatura desconhecida, será mostrada informação para identificação.[/dim]")
-        console.print("[dim]Ficheiros organizados serão movidos da pasta temporária para a pasta final.[/dim]\n")
+        console.print("\n[bold cyan]A organizar faturas...[/bold cyan]")
+        console.print(
+            "[dim]Para cada fatura desconhecida, será mostrada informação para identificação.[/dim]"
+        )
+        console.print(
+            "[dim]Ficheiros organizados serão movidos da pasta temporária para a pasta final.[/dim]\n"
+        )
 
         # Get pending attachments from inbox and convert to DownloadedInvoice
         pending_attachments = inbox_db.get_pending_attachments(limit=total_attachments_added + 10)
@@ -608,7 +258,9 @@ def faturas(
 
         for att in pending_attachments:
             if not Path(att.file_path).exists():
-                inbox_db.mark_deleted(att.id, reason="file_not_found", reason_label="Ficheiro não encontrado")
+                inbox_db.mark_deleted(
+                    att.id, reason="file_not_found", reason_label="Ficheiro não encontrado"
+                )
                 continue
 
             invoice = DownloadedInvoice(
@@ -653,9 +305,13 @@ def faturas(
                     entity_name=result.entity_name,
                 )
             elif action == "delete":
-                inbox_db.mark_deleted(att.id, reason="manual", reason_label="Eliminado pelo utilizador")
+                inbox_db.mark_deleted(
+                    att.id, reason="manual", reason_label="Eliminado pelo utilizador"
+                )
             elif action == "ignore" or (not result.success and "Ignorado" in (result.error or "")):
-                inbox_db.mark_ignored(att.id, reason="manual", reason_label="Ignorado pelo utilizador")
+                inbox_db.mark_ignored(
+                    att.id, reason="manual", reason_label="Ignorado pelo utilizador"
+                )
 
         processor.show_session_summary()
 
@@ -679,7 +335,11 @@ def faturas(
                 table.add_row(
                     str(att.id),
                     att.email.provider,
-                    att.email.sender[:28] + ".." if len(att.email.sender) > 30 else att.email.sender,
+                    (
+                        att.email.sender[:28] + ".."
+                        if len(att.email.sender) > 30
+                        else att.email.sender
+                    ),
                     att.email.email_date.strftime("%d-%m-%Y"),
                     att.file_name[:30] + ".." if len(att.file_name) > 32 else att.file_name,
                     f"{size_kb:.1f} KB",
@@ -687,7 +347,9 @@ def faturas(
 
             console.print(table)
 
-        console.print(f"\n[cyan]Use 'bank-extractor faturas-processar-inbox' para processar as faturas[/cyan]")
+        console.print(
+            "\n[cyan]Use 'bank-extractor faturas-processar-inbox' para processar as faturas[/cyan]"
+        )
         console.print("[dim]Ou execute novamente com --organizar para processar agora[/dim]")
 
 
@@ -696,7 +358,9 @@ def _show_pending_temp_files() -> None:
     temp_files = list(settings.faturas_temp_dir.glob("*.pdf"))
 
     if temp_files:
-        console.print(f"\n[yellow]⚠ {len(temp_files)} ficheiro(s) ainda na pasta temporária:[/yellow]")
+        console.print(
+            f"\n[yellow]⚠ {len(temp_files)} ficheiro(s) ainda na pasta temporária:[/yellow]"
+        )
         for f in temp_files[:5]:  # Show max 5
             console.print(f"  [dim]• {f.name}[/dim]")
         if len(temp_files) > 5:
@@ -742,7 +406,9 @@ def _process_invoices_streaming(
     processor = InvoiceProcessor()
     processor.reset_session_stats()
 
-    console.print(f"\n[bold cyan]Modo paralelo: a descarregar e processar simultaneamente...[/bold cyan]")
+    console.print(
+        "\n[bold cyan]Modo paralelo: a descarregar e processar simultaneamente...[/bold cyan]"
+    )
     console.print("[dim]Faturas serão apresentadas à medida que são descarregadas.[/dim]\n")
 
     # Suppress logging during interactive processing
@@ -770,7 +436,6 @@ def _process_invoices_streaming(
     processed_count = 0
     pending_invoices = []  # Store invoices waiting to be processed
     auto_actions = {}  # Maps invoice index to (action, rule_name)
-    download_complete = False
 
     # Use a status line that updates in place
     from rich.status import Status
@@ -783,7 +448,6 @@ def _process_invoices_streaming(
                     item = queue.get(timeout=0.3)
 
                     if item is _DOWNLOAD_COMPLETE:
-                        download_complete = True
                         break
 
                     # Store the invoice
@@ -837,7 +501,9 @@ def _process_invoices_streaming(
                         status.update(f"[cyan]⟳ {msg}[/cyan]")
                     elif stage == "fetch":
                         if total > 0:
-                            status.update(f"[yellow]⟳ Email {current}/{total} | Processadas: {processed_count}[/yellow]")
+                            status.update(
+                                f"[yellow]⟳ Email {current}/{total} | Processadas: {processed_count}[/yellow]"
+                            )
                         else:
                             status.update(f"[yellow]⟳ {msg}[/yellow]")
                     elif stage == "download":
@@ -853,7 +519,6 @@ def _process_invoices_streaming(
                             try:
                                 item = queue.get_nowait()
                                 if item is _DOWNLOAD_COMPLETE:
-                                    download_complete = True
                                     break
 
                                 # Store and process remaining
@@ -863,7 +528,9 @@ def _process_invoices_streaming(
                                 auto_action = auto_actions.get(invoice_idx)
 
                                 if not auto_action:
-                                    console.print(f"\n[cyan]━━━ Fatura {invoice_idx + 1} ━━━[/cyan]")
+                                    console.print(
+                                        f"\n[cyan]━━━ Fatura {invoice_idx + 1} ━━━[/cyan]"
+                                    )
 
                                 result, rule_condition, action = processor.process_invoice(
                                     invoice,
@@ -936,7 +603,7 @@ def _configure_email_credentials(provider: str, account: Optional[str] = None) -
             )
 
         # Prompt for credentials
-        email_addr = CredentialManager.get_or_prompt(
+        CredentialManager.get_or_prompt(
             credential_key,
             "email",
             f"Email {display_name}",
@@ -1012,13 +679,12 @@ def _select_providers_interactive(
         options.append((prov, acc, display))
         console.print(f"  {i}. {display}")
 
-    console.print(f"  0. [dim]Todas as contas[/dim]")
+    console.print("  0. [dim]Todas as contas[/dim]")
     console.print()
 
     # Get selection
     selection = Prompt.ask(
-        "Contas a usar (números separados por vírgula, ou 0 para todas)",
-        default="0"
+        "Contas a usar (números separados por vírgula, ou 0 para todas)", default="0"
     )
 
     if selection.strip() == "0":
@@ -1161,13 +827,14 @@ def faturas_credenciais(
             console.print(f"[yellow]Não existem credenciais para {display_name}.[/yellow]")
             return
 
-        console.print(f"\n[bold red]APAGAR credenciais de:[/bold red]")
+        console.print("\n[bold red]APAGAR credenciais de:[/bold red]")
         console.print(f"  Provider: {provider.upper()}")
         console.print(f"  Conta: {conta or '(default)'}")
         console.print(f"  Email: {email}")
 
         if not confirmar:
             from rich.prompt import Confirm
+
             if not Confirm.ask("\n[red]Tem a certeza?[/red]", default=False):
                 console.print("[dim]Operação cancelada.[/dim]")
                 return
@@ -1187,7 +854,7 @@ def faturas_credenciais(
             "2. Crie App Password em: https://myaccount.google.com/apppasswords\n"
         )
 
-    email_addr = CredentialManager.get_or_prompt(
+    CredentialManager.get_or_prompt(
         credential_key,
         "email",
         f"Email {display_name}",
@@ -1212,17 +879,20 @@ def faturas_scrape(
     ),
     dias: int = typer.Option(
         settings.invoice_days_default,
-        "--dias", "-d",
+        "--dias",
+        "-d",
         help="Número de dias a pesquisar (padrão: 30)",
     ),
     inicio: Optional[str] = typer.Option(
         None,
-        "--inicio", "-i",
+        "--inicio",
+        "-i",
         help="Data início (DD-MM-YYYY). Sobrepõe --dias.",
     ),
     fim: Optional[str] = typer.Option(
         None,
-        "--fim", "-f",
+        "--fim",
+        "-f",
         help="Data fim (DD-MM-YYYY). Default: hoje.",
     ),
     conta: Optional[str] = typer.Option(
@@ -1242,11 +912,13 @@ def faturas_scrape(
     """
     from src import __version__
 
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Scrape de faturas para inbox",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+            "Scrape de faturas para inbox",
+            border_style="blue",
+        )
+    )
 
     # Validate provider
     if provider.lower() == "todos":
@@ -1266,7 +938,9 @@ def faturas_scrape(
 
     end_date = parse_date(fim) if fim else date.today()
 
-    console.print(f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]")
+    console.print(
+        f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]"
+    )
     if conta:
         console.print(f"[cyan]Conta: {conta}[/cyan]")
 
@@ -1296,15 +970,29 @@ def faturas_scrape(
             def update_progress(stage: str, current: int, total: int, message: str):
                 if stage == "connect":
                     if current >= 1:
-                        progress.update(current_task, description="[green]✓ Ligado[/green]", total=None)
+                        progress.update(
+                            current_task, description="[green]✓ Ligado[/green]", total=None
+                        )
                     else:
                         progress.update(current_task, description=f"[cyan]{message}", total=None)
                 elif stage == "search":
-                    progress.update(current_task, description=f"[yellow]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task,
+                        description=f"[yellow]{message}",
+                        total=total,
+                        completed=current,
+                    )
                 elif stage == "fetch":
-                    progress.update(current_task, description=f"[blue]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task, description=f"[blue]{message}", total=total, completed=current
+                    )
                 elif stage == "download":
-                    progress.update(current_task, description=f"[green]{message}", total=total, completed=current)
+                    progress.update(
+                        current_task,
+                        description=f"[green]{message}",
+                        total=total,
+                        completed=current,
+                    )
 
             try:
                 ea, es, aa, as_ = downloader.scrape_to_inbox(
@@ -1327,25 +1015,29 @@ def faturas_scrape(
                 console.print(f"[red]Erro: {e}[/red]")
 
     # Summary
-    console.print(f"\n[bold]━━━ Resumo do Scrape ━━━[/bold]")
+    console.print("\n[bold]━━━ Resumo do Scrape ━━━[/bold]")
     console.print(f"  Emails novos: [green]{total_emails_added}[/green]")
     console.print(f"  Emails existentes: [dim]{total_emails_skipped}[/dim]")
     console.print(f"  Anexos novos: [green]{total_attachments_added}[/green]")
     console.print(f"  Anexos duplicados: [dim]{total_attachments_skipped}[/dim]")
 
     if total_attachments_added > 0:
-        console.print(f"\n[cyan]Use 'bank-extractor faturas processar-inbox' para processar os anexos[/cyan]")
+        console.print(
+            "\n[cyan]Use 'bank-extractor faturas processar-inbox' para processar os anexos[/cyan]"
+        )
 
 
 def faturas_inbox(
     stats: bool = typer.Option(
         False,
-        "--stats", "-s",
+        "--stats",
+        "-s",
         help="Mostrar estatísticas do inbox",
     ),
     listar: bool = typer.Option(
         False,
-        "--listar", "-l",
+        "--listar",
+        "-l",
         help="Listar anexos pendentes",
     ),
     status: Optional[str] = typer.Option(
@@ -1355,7 +1047,8 @@ def faturas_inbox(
     ),
     remetente: Optional[str] = typer.Option(
         None,
-        "--remetente", "-r",
+        "--remetente",
+        "-r",
         help="Filtrar por remetente (parcial)",
     ),
     limite: int = typer.Option(
@@ -1383,11 +1076,12 @@ def faturas_inbox(
     from src.modules.invoices.inbox_db import InboxDatabase
     from src.modules.invoices.inbox_models import AttachmentStatus
 
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Gestão do Inbox",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Gestão do Inbox",
+            border_style="blue",
+        )
+    )
 
     inbox_db = InboxDatabase()
 
@@ -1404,7 +1098,7 @@ def faturas_inbox(
     if stats:
         inbox_stats = inbox_db.get_statistics()
 
-        console.print(f"\n[bold cyan]Estatísticas do Inbox[/bold cyan]\n")
+        console.print("\n[bold cyan]Estatísticas do Inbox[/bold cyan]\n")
 
         # General stats table
         general_table = Table(title="Resumo Geral")
@@ -1485,7 +1179,9 @@ def faturas_inbox(
             "deleted": "red",
         }.get(att.status, "white")
 
-        sender_display = att.email.sender[:28] + ".." if len(att.email.sender) > 30 else att.email.sender
+        sender_display = (
+            att.email.sender[:28] + ".." if len(att.email.sender) > 30 else att.email.sender
+        )
         file_display = att.file_name[:33] + ".." if len(att.file_name) > 35 else att.file_name
         size_kb = att.file_size / 1024
 
@@ -1631,23 +1327,27 @@ def _migrate_to_inbox(inbox_db) -> None:
     console.print(f"  [dim]Total: {migrated_pending} documentos pendentes migrados[/dim]")
 
     # Summary
-    console.print(f"\n[bold]━━━ Resumo da Migração ━━━[/bold]")
+    console.print("\n[bold]━━━ Resumo da Migração ━━━[/bold]")
     console.print(f"  Ficheiros de _pendentes/: [green]{migrated_files}[/green]")
     console.print(f"  Documentos de pending_documents.json: [green]{migrated_pending}[/green]")
 
     if migrated_files > 0 or migrated_pending > 0:
-        console.print(f"\n[cyan]Use 'bank-extractor faturas inbox --stats' para ver o estado actual[/cyan]")
+        console.print(
+            "\n[cyan]Use 'bank-extractor faturas inbox --stats' para ver o estado actual[/cyan]"
+        )
 
 
 def faturas_processar_inbox(
     limite: int = typer.Option(
         None,
-        "--limite", "-n",
+        "--limite",
+        "-n",
         help="Número máximo de anexos a processar",
     ),
     remetente: Optional[str] = typer.Option(
         None,
-        "--remetente", "-r",
+        "--remetente",
+        "-r",
         help="Filtrar por remetente (parcial)",
     ),
     interativo: bool = typer.Option(
@@ -1657,7 +1357,8 @@ def faturas_processar_inbox(
     ),
     mover: bool = typer.Option(
         False,
-        "--mover", "-m",
+        "--mover",
+        "-m",
         help="Mover ficheiros em vez de copiar ao organizar",
     ),
 ):
@@ -1674,14 +1375,14 @@ def faturas_processar_inbox(
     from src import __version__
     from src.modules.invoices import InvoiceProcessor
     from src.modules.invoices.inbox_db import InboxDatabase
-    from src.modules.invoices.inbox_models import AttachmentStatus
     from src.modules.invoices.base import DownloadedInvoice
 
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Processar anexos do inbox",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Processar anexos do inbox",
+            border_style="blue",
+        )
+    )
 
     inbox_db = InboxDatabase()
 
@@ -1708,7 +1409,9 @@ def faturas_processar_inbox(
         if not Path(att.file_path).exists():
             console.print(f"[yellow]Ficheiro não encontrado: {att.file_path}[/yellow]")
             # Mark as deleted in database
-            inbox_db.mark_deleted(att.id, reason="file_not_found", reason_label="Ficheiro não encontrado")
+            inbox_db.mark_deleted(
+                att.id, reason="file_not_found", reason_label="Ficheiro não encontrado"
+            )
             continue
 
         invoice = DownloadedInvoice(
@@ -1770,4 +1473,6 @@ def faturas_processar_inbox(
 
     # Show updated stats
     stats = inbox_db.get_status_counts()
-    console.print(f"\n[dim]Inbox: {stats['pending']} pendentes, {stats['processed']} processados[/dim]")
+    console.print(
+        f"\n[dim]Inbox: {stats['pending']} pendentes, {stats['processed']} processados[/dim]"
+    )

@@ -10,15 +10,14 @@ This module provides:
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from uuid import uuid4
 
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from src.core.config import settings
@@ -30,6 +29,7 @@ logger = get_logger(__name__)
 
 class MatchType(str, Enum):
     """How to match the pattern against the value."""
+
     EXACT = "exact"  # Exact match (case-insensitive)
     CONTAINS = "contains"  # Value contains pattern
     REGEX = "regex"  # Regular expression match
@@ -39,6 +39,7 @@ class MatchType(str, Enum):
 
 class MatchSource(str, Enum):
     """What field to match against."""
+
     SENDER_EMAIL = "sender_email"  # Email sender address
     SENDER_NAME = "sender_name"  # Email sender display name
     SUBJECT = "subject"  # Email subject
@@ -51,6 +52,7 @@ class MatchSource(str, Enum):
 
 class RuleAction(str, Enum):
     """What action to take when rule matches."""
+
     ASSIGN_ENTITY = "assign_entity"  # Assign to entity by ID
     ASSIGN_CATEGORY = "assign_category"  # Assign invoice category
     ASSIGN_DOCUMENT_TYPE = "assign_document_type"  # Set document type
@@ -60,6 +62,7 @@ class RuleAction(str, Enum):
 @dataclass
 class RuleCondition:
     """A single condition within a rule."""
+
     source: MatchSource
     match_type: MatchType
     pattern: str
@@ -123,6 +126,7 @@ class RuleCondition:
 @dataclass
 class ClassificationRule:
     """A classification rule with conditions and actions."""
+
     id: str
     name: str
     description: str
@@ -189,6 +193,7 @@ class ClassificationRule:
 @dataclass
 class RuleMatch:
     """Result of a rule match."""
+
     rule: ClassificationRule
     action: RuleAction
     action_value: str
@@ -349,12 +354,14 @@ class ClassificationRulesEngine:
                         source_name = cond.source.value.replace("_", " ").title()
                         matched_conditions.append(f"{source_name}: '{cond.pattern}'")
 
-                matches.append(RuleMatch(
-                    rule=rule,
-                    action=rule.action,
-                    action_value=rule.action_value,
-                    matched_conditions=matched_conditions,
-                ))
+                matches.append(
+                    RuleMatch(
+                        rule=rule,
+                        action=rule.action,
+                        action_value=rule.action_value,
+                        matched_conditions=matched_conditions,
+                    )
+                )
 
                 # Increment hit count
                 rule.hit_count += 1
@@ -404,39 +411,49 @@ class ClassificationRulesEngine:
         conditions = []
 
         if sender_email:
-            conditions.append(RuleCondition(
-                source=MatchSource.SENDER_EMAIL,
-                match_type=MatchType.EXACT,
-                pattern=sender_email,
-            ))
+            conditions.append(
+                RuleCondition(
+                    source=MatchSource.SENDER_EMAIL,
+                    match_type=MatchType.EXACT,
+                    pattern=sender_email,
+                )
+            )
 
         if subject_pattern:
-            conditions.append(RuleCondition(
-                source=MatchSource.SUBJECT,
-                match_type=MatchType.CONTAINS,
-                pattern=subject_pattern,
-            ))
+            conditions.append(
+                RuleCondition(
+                    source=MatchSource.SUBJECT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=subject_pattern,
+                )
+            )
 
         if body_pattern:
-            conditions.append(RuleCondition(
-                source=MatchSource.BODY,
-                match_type=MatchType.CONTAINS,
-                pattern=body_pattern,
-            ))
+            conditions.append(
+                RuleCondition(
+                    source=MatchSource.BODY,
+                    match_type=MatchType.CONTAINS,
+                    pattern=body_pattern,
+                )
+            )
 
         if nif:
-            conditions.append(RuleCondition(
-                source=MatchSource.PDF_NIF,
-                match_type=MatchType.EXACT,
-                pattern=nif,
-            ))
+            conditions.append(
+                RuleCondition(
+                    source=MatchSource.PDF_NIF,
+                    match_type=MatchType.EXACT,
+                    pattern=nif,
+                )
+            )
 
         if pdf_pattern:
-            conditions.append(RuleCondition(
-                source=MatchSource.PDF_CONTENT,
-                match_type=MatchType.CONTAINS,
-                pattern=pdf_pattern,
-            ))
+            conditions.append(
+                RuleCondition(
+                    source=MatchSource.PDF_CONTENT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=pdf_pattern,
+                )
+            )
 
         if not conditions:
             raise ValueError("At least one condition is required")
@@ -448,7 +465,7 @@ class ClassificationRulesEngine:
             conditions=conditions,
             action=RuleAction.ASSIGN_ENTITY,
             action_value=entity_id,
-            description=f"Auto-created rule",
+            description="Auto-created rule",
             match_all=len(conditions) == 1,  # Use OR if multiple conditions
         )
 

@@ -89,10 +89,16 @@ DEFAULT_RULES: list[CategoryRule] = [
         category=InvoiceCategory.COMUNICACOES,
         patterns=[r"vodafone", r"nos\.pt", r"meo", r"nowo", r"lycamobile"],
         sender_domains=["vodafone.pt", "nos.pt", "meo.pt", "nowo.pt"],
-        keywords=["vodafone", "nos comunicações", "meo", "telecomunicações", "telemóvel", "internet fixa"],
+        keywords=[
+            "vodafone",
+            "nos comunicações",
+            "meo",
+            "telecomunicações",
+            "telemóvel",
+            "internet fixa",
+        ],
         nif_list=["502618930", "504448064", "500780472"],  # Vodafone, NOS, MEO
     ),
-
     # Via Verde
     CategoryRule(
         category=InvoiceCategory.VIA_VERDE,
@@ -101,7 +107,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         keywords=["via verde", "portagem", "brisa", "a]auto-estrada"],
         nif_list=["500075066"],  # Via Verde
     ),
-
     # Energia
     CategoryRule(
         category=InvoiceCategory.ENERGIA,
@@ -110,7 +115,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         keywords=["energia", "eletricidade", "electricidade", "gás natural", "edp comercial"],
         nif_list=["503504564", "504499777", "503161314"],  # EDP, Galp, Endesa
     ),
-
     # Agua
     CategoryRule(
         category=InvoiceCategory.AGUA,
@@ -119,15 +123,22 @@ DEFAULT_RULES: list[CategoryRule] = [
         keywords=["água", "abastecimento", "saneamento", "epal", "simas"],
         nif_list=["500904568", "505aboraseu"],  # EPAL, SIMAS
     ),
-
     # Educacao
     CategoryRule(
         category=InvoiceCategory.EDUCACAO,
-        patterns=[r"misericordia", r"misericórdia", r"escola", r"colégio", r"colegio", r"creche", r"infantário", r"infantario"],
+        patterns=[
+            r"misericordia",
+            r"misericórdia",
+            r"escola",
+            r"colégio",
+            r"colegio",
+            r"creche",
+            r"infantário",
+            r"infantario",
+        ],
         sender_domains=["misericordia-amadora.pt"],
         keywords=["educação", "mensalidade escolar", "propina", "creche", "infantário", "colégio"],
     ),
-
     # Combustivel
     CategoryRule(
         category=InvoiceCategory.COMBUSTIVEL,
@@ -136,16 +147,21 @@ DEFAULT_RULES: list[CategoryRule] = [
         keywords=["combustível", "gasolina", "gasóleo", "posto de abastecimento"],
         nif_list=["500008505", "500243493"],  # Galp, BP
     ),
-
     # Seguros
     CategoryRule(
         category=InvoiceCategory.SEGUROS,
-        patterns=[r"fidelidade", r"allianz", r"generali", r"tranquilidade", r"ageas", r"ok.?teleseguros"],
+        patterns=[
+            r"fidelidade",
+            r"allianz",
+            r"generali",
+            r"tranquilidade",
+            r"ageas",
+            r"ok.?teleseguros",
+        ],
         sender_domains=["fidelidade.pt", "allianz.pt", "generali.pt", "tranquilidade.pt"],
         keywords=["seguro", "apólice", "prémio", "sinistro", "cobertura"],
         nif_list=["500918880", "500037540"],  # Fidelidade, Allianz
     ),
-
     # Saude
     CategoryRule(
         category=InvoiceCategory.SAUDE,
@@ -153,7 +169,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["farmaciasportuguesas.pt"],
         keywords=["farmácia", "medicamento", "consulta médica", "saúde", "clínica"],
     ),
-
     # Software/Tecnologia
     CategoryRule(
         category=InvoiceCategory.SOFTWARE,
@@ -161,7 +176,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["microsoft.com", "google.com", "adobe.com", "github.com", "amazon.com"],
         keywords=["software", "licença", "subscrição", "cloud", "saas"],
     ),
-
     # Material de Escritorio
     CategoryRule(
         category=InvoiceCategory.MATERIAL_ESCRITORIO,
@@ -169,7 +183,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["staples.pt", "note.pt"],
         keywords=["material de escritório", "papelaria", "toner", "impressora"],
     ),
-
     # Alimentacao
     CategoryRule(
         category=InvoiceCategory.ALIMENTACAO,
@@ -177,7 +190,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["continente.pt", "pingodoce.pt"],
         keywords=["supermercado", "alimentação", "mercearia"],
     ),
-
     # Transportes
     CategoryRule(
         category=InvoiceCategory.TRANSPORTES,
@@ -185,7 +197,6 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["uber.com", "bolt.eu", "cp.pt"],
         keywords=["transporte", "viagem", "bilhete", "táxi", "comboio"],
     ),
-
     # Alojamento
     CategoryRule(
         category=InvoiceCategory.ALOJAMENTO,
@@ -193,12 +204,26 @@ DEFAULT_RULES: list[CategoryRule] = [
         sender_domains=["booking.com", "airbnb.com"],
         keywords=["hotel", "alojamento", "reserva", "estadia"],
     ),
-
     # Bancario
     CategoryRule(
         category=InvoiceCategory.BANCARIO,
-        patterns=[r"banco", r"ctt.?banco", r"cgd", r"millennium", r"bpi", r"santander", r"novobanco"],
-        sender_domains=["bancoctt.pt", "cgd.pt", "millenniumbcp.pt", "bancobpi.pt", "santander.pt", "novobanco.pt"],
+        patterns=[
+            r"banco",
+            r"ctt.?banco",
+            r"cgd",
+            r"millennium",
+            r"bpi",
+            r"santander",
+            r"novobanco",
+        ],
+        sender_domains=[
+            "bancoctt.pt",
+            "cgd.pt",
+            "millenniumbcp.pt",
+            "bancobpi.pt",
+            "santander.pt",
+            "novobanco.pt",
+        ],
         keywords=["extrato", "transferência", "comprovativo", "iban", "movimento bancário"],
     ),
 ]

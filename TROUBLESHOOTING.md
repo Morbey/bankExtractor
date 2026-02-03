@@ -24,10 +24,9 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
    - Vá a Definições do Gmail > Encaminhamento e POP/IMAP
    - Active o IMAP
 
-4. **Limpar Credenciais Guardadas**:
+4. **Reconfigurar Credenciais**:
    ```bash
-   bank-extractor faturas-limpar gmail --conta pessoal
-   bank-extractor faturas gmail --conta pessoal --config
+   bank-extractor config credenciais gmail --conta pessoal
    ```
 
 ### 2. Login Bancário Timeout/Falhou
@@ -49,8 +48,7 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
 
 3. **Repor Credenciais**:
    ```bash
-   bank-extractor credenciais cgd --limpar
-   bank-extractor credenciais cgd
+   bank-extractor config credenciais cgd
    ```
 
 4. **Site do Banco Pode Ter Mudado**:
@@ -65,12 +63,12 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
 
 1. **Processar Interactivamente**:
    ```bash
-   bank-extractor processar E:\docs --interativo
+   bank-extractor documentos processar E:\docs --interativo
    ```
 
 2. **Criar Entidade Manualmente**:
    ```bash
-   bank-extractor entidades criar --nome "Nome Empresa" --pasta "NomeEmpresa" --nif 123456789
+   bank-extractor entidades criar --nome "Nome Empresa" --pasta "NomeEmpresa" --nif "123456789"
    ```
 
 3. **Verificar Extracção de Texto do PDF**:
@@ -79,7 +77,7 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
 
 4. **Ver Documentos Pendentes**:
    ```bash
-   bank-extractor pendentes --listar
+   bank-extractor documentos pendentes --listar
    ```
 
 ### 4. OCR Não Funciona
@@ -110,12 +108,12 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
 
 1. **Reconstruir Índice**:
    ```bash
-   bank-extractor organizar --reindexar
+   bank-extractor documentos processar --reindexar
    ```
 
 2. **Limpar Fila de Pendentes**:
    ```bash
-   bank-extractor pendentes --limpar
+   bank-extractor documentos pendentes --limpar
    ```
 
 3. **Verificar Ficheiro de Base de Dados**:
@@ -135,9 +133,9 @@ Este guia ajuda a resolver os problemas mais comuns do Bank Extractor.
 
 2. **Repor Todas as Credenciais**:
    ```bash
-   bank-extractor credenciais cgd --limpar
-   bank-extractor credenciais ctt --limpar
-   bank-extractor faturas-limpar gmail
+   bank-extractor config credenciais cgd
+   bank-extractor config credenciais ctt
+   bank-extractor config credenciais gmail
    ```
 
 ### 7. Erros de Import no Arranque
@@ -193,8 +191,8 @@ Copie toda a pasta `data/`:
 
 Sim, use a opção `--conta`:
 ```bash
-bank-extractor faturas gmail --conta pessoal
-bank-extractor faturas gmail --conta empresa
+bank-extractor email download gmail --conta pessoal
+bank-extractor email download gmail --conta empresa
 ```
 
 ### Como mudo o directório de dados?

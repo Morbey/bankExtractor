@@ -11,14 +11,13 @@ This module provides:
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from src.core.config import settings
@@ -30,16 +29,61 @@ logger = get_logger(__name__)
 
 class DocumentType(str, Enum):
     """Types of financial documents."""
-    FATURA = "fatura"
-    COMPROVATIVO_TRANSFERENCIA = "comprovativo_transferencia"
-    NOTA_CREDITO = "nota_credito"
+
+    # Documentos de cobrança
+    FATURA = "fatura"  # Conta a pagar
+    NOTA_CREDITO = "nota_credito"  # Devolução/anulação
+
+    # Comprovativos de pagamento
+    DESPESA = "despesa"  # Pagamento efectuado (recibo de despesa)
+    RECIBO = "recibo"  # Recibo genérico
+
+    # Transferências bancárias
+    COMPROVATIVO_PAGAMENTO = "comprovativo_pagamento"  # Transferência enviada
+    COMPROVATIVO_RECEBIMENTO = "comprovativo_recebimento"  # Transferência recebida
+    COMPROVATIVO_TRANSFERENCIA = "comprovativo_transferencia"  # Legacy/genérico
+
+    # Bancários
     EXTRATO_BANCARIO = "extrato_bancario"
-    RECIBO = "recibo"
+
+    # Outros
+    CONTRATO = "contrato"
     OUTRO = "outro"
+
+    @classmethod
+    def get_folder_name(cls, doc_type: "DocumentType") -> str:
+        """Get the folder name for a document type."""
+        folder_map = {
+            cls.FATURA: "faturas",
+            cls.NOTA_CREDITO: "faturas",  # Vai junto com faturas
+            cls.DESPESA: "despesas",
+            cls.RECIBO: "despesas",  # Vai junto com despesas
+            cls.COMPROVATIVO_PAGAMENTO: "comprovativos/pagamentos",
+            cls.COMPROVATIVO_RECEBIMENTO: "comprovativos/recebimentos",
+            cls.COMPROVATIVO_TRANSFERENCIA: "comprovativos",
+            cls.EXTRATO_BANCARIO: "extratos",
+            cls.CONTRATO: "outros",
+            cls.OUTRO: "outros",
+        }
+        return folder_map.get(doc_type, "outros")
+
+    @classmethod
+    def get_display_options(cls) -> list[tuple["DocumentType", str]]:
+        """Get document types for interactive selection."""
+        return [
+            (cls.FATURA, "Fatura (conta a pagar)"),
+            (cls.DESPESA, "Despesa/Recibo (já pago)"),
+            (cls.COMPROVATIVO_PAGAMENTO, "Comprovativo de pagamento (transferência enviada)"),
+            (cls.COMPROVATIVO_RECEBIMENTO, "Comprovativo de recebimento (transferência recebida)"),
+            (cls.EXTRATO_BANCARIO, "Extrato bancário"),
+            (cls.CONTRATO, "Contrato"),
+            (cls.OUTRO, "Outro documento"),
+        ]
 
 
 class DocumentStatus(str, Enum):
     """Document processing status."""
+
     PENDENTE = "pendente"  # Awaiting classification
     CLASSIFICADO = "classificado"  # Classified but not linked
     PAGO = "pago"  # Invoice marked as paid
@@ -49,6 +93,7 @@ class DocumentStatus(str, Enum):
 
 class EntityType(str, Enum):
     """Types of entities/actors."""
+
     EMPRESA = "empresa"
     PESSOA = "pessoa"
     BANCO = "banco"
@@ -58,6 +103,7 @@ class EntityType(str, Enum):
 
 class AccountingScope(str, Enum):
     """Accounting scope for document organization."""
+
     PESSOAL = "pessoal"  # Personal accounting
     EMPRESA = "empresa"  # Business accounting
 
@@ -65,6 +111,7 @@ class AccountingScope(str, Enum):
 @dataclass
 class Entity:
     """Represents an actor/entity in the system."""
+
     id: str
     name: str
     folder_name: str
@@ -78,9 +125,14 @@ class Entity:
     notes: str = ""
     created_at: str = ""
 
-    def matches(self, nif: Optional[str] = None, iban: Optional[str] = None,
-                email: Optional[str] = None, name: Optional[str] = None,
-                sender_email: Optional[str] = None) -> bool:
+    def matches(
+        self,
+        nif: Optional[str] = None,
+        iban: Optional[str] = None,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+        sender_email: Optional[str] = None,
+    ) -> bool:
         """Check if entity matches any of the provided identifiers."""
         if nif and nif in self.nifs:
             return True
@@ -137,6 +189,7 @@ class Entity:
 @dataclass
 class DocumentRecord:
     """Record of a processed document."""
+
     id: str
     file_path: str
     file_name: str
@@ -159,7 +212,9 @@ class DocumentRecord:
     destination_iban: Optional[str] = None
 
     # Reconciliation
-    linked_document_ids: list[str] = field(default_factory=list)  # Related docs (e.g., invoice linked to payment)
+    linked_document_ids: list[str] = field(
+        default_factory=list
+    )  # Related docs (e.g., invoice linked to payment)
 
     # Metadata
     raw_text: Optional[str] = None
@@ -350,7 +405,9 @@ class DocumentRegistry:
     ) -> Optional[Entity]:
         """Find an entity by any identifier."""
         for entity in self._entities.values():
-            if entity.matches(nif=nif, iban=iban, email=email, name=name, sender_email=sender_email):
+            if entity.matches(
+                nif=nif, iban=iban, email=email, name=name, sender_email=sender_email
+            ):
                 return entity
         return None
 
@@ -454,14 +511,16 @@ class DocumentRegistry:
     def get_documents_by_entity(self, entity_id: str) -> list[DocumentRecord]:
         """Get all documents related to an entity."""
         return [
-            d for d in self._documents.values()
+            d
+            for d in self._documents.values()
             if d.emitter_entity_id == entity_id or d.receiver_entity_id == entity_id
         ]
 
     def get_unpaid_invoices(self) -> list[DocumentRecord]:
         """Get all unpaid invoices."""
         return [
-            d for d in self._documents.values()
+            d
+            for d in self._documents.values()
             if d.document_type == DocumentType.FATURA and d.status == DocumentStatus.POR_PAGAR
         ]
 
@@ -536,14 +595,8 @@ class DocumentRegistry:
         """
         if reason_code in ("sem_razao", "none", "sem razao"):
             # Return documents without a reason
-            return [
-                doc for doc in self._pending
-                if not doc.get("ignore_reason")
-            ]
-        return [
-            doc for doc in self._pending
-            if doc.get("ignore_reason") == reason_code
-        ]
+            return [doc for doc in self._pending if not doc.get("ignore_reason")]
+        return [doc for doc in self._pending if doc.get("ignore_reason") == reason_code]
 
     def get_pending_stats(self) -> dict[str, tuple[str, int]]:
         """Get statistics of pending documents grouped by reason.
@@ -642,7 +695,9 @@ class DocumentRegistry:
             console.print(f"\n[bold]Documentos relacionados ({len(docs)}):[/bold]")
             for doc in docs[:10]:
                 status_color = {"pago": "green", "por_pagar": "red"}.get(doc.status.value, "yellow")
-                console.print(f"  • {doc.file_name[:50]} [{status_color}]{doc.status.value}[/{status_color}]")
+                console.print(
+                    f"  • {doc.file_name[:50]} [{status_color}]{doc.status.value}[/{status_color}]"
+                )
 
 
 # Global instance

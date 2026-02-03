@@ -7,7 +7,6 @@ from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from src.core import get_logger
 
@@ -67,11 +66,13 @@ class ConsoleFormatter(ReportFormatter):
             console = self.console
 
         # Header
-        console.print(Panel.fit(
-            f"[bold blue]RELATÓRIO FINANCEIRO[/bold blue]\n"
-            f"[cyan]{report.period_name}[/cyan]",
-            border_style="blue",
-        ))
+        console.print(
+            Panel.fit(
+                f"[bold blue]RELATÓRIO FINANCEIRO[/bold blue]\n"
+                f"[cyan]{report.period_name}[/cyan]",
+                border_style="blue",
+            )
+        )
 
         if not report.has_data:
             console.print("\n[yellow]Sem dados para este período.[/yellow]")
@@ -90,8 +91,7 @@ class ConsoleFormatter(ReportFormatter):
         summary_table.add_row("Recibos", str(report.total_receipts))
         summary_table.add_row("", "")
         summary_table.add_row(
-            "[bold]TOTAL[/bold]",
-            f"[bold green]{report.total_amount:.2f}€[/bold green]"
+            "[bold]TOTAL[/bold]", f"[bold green]{report.total_amount:.2f}€[/bold green]"
         )
 
         console.print(summary_table)
@@ -119,7 +119,7 @@ class ConsoleFormatter(ReportFormatter):
             comp_table.add_row("Mês atual", f"{comp.current_total:.2f}€")
             comp_table.add_row(
                 "Diferença",
-                f"[{trend_color}]{trend_icon} {comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)[/{trend_color}]"
+                f"[{trend_color}]{trend_icon} {comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)[/{trend_color}]",
             )
 
             console.print(comp_table)
@@ -226,7 +226,7 @@ class HTMLFormatter(ReportFormatter):
             "  </style>",
             "</head>",
             "<body>",
-            f"  <h1>Relatório Financeiro</h1>",
+            "  <h1>Relatório Financeiro</h1>",
             f"  <h2>{report.period_name}</h2>",
         ]
 
@@ -234,42 +234,48 @@ class HTMLFormatter(ReportFormatter):
             html_parts.append("  <p class='warning'>Sem dados para este período.</p>")
         else:
             # Summary
-            html_parts.extend([
-                "  <section class='summary'>",
-                "    <h3>Resumo</h3>",
-                "    <table>",
-                f"      <tr><td>Total documentos</td><td>{report.total_documents}</td></tr>",
-                f"      <tr><td>Faturas</td><td>{report.total_invoices}</td></tr>",
-                f"      <tr><td>Extratos</td><td>{report.total_statements}</td></tr>",
-                f"      <tr><td>Recibos</td><td>{report.total_receipts}</td></tr>",
-                f"      <tr class='total'><td><strong>TOTAL</strong></td><td><strong>{report.total_amount:.2f}€</strong></td></tr>",
-                "    </table>",
-                "  </section>",
-            ])
+            html_parts.extend(
+                [
+                    "  <section class='summary'>",
+                    "    <h3>Resumo</h3>",
+                    "    <table>",
+                    f"      <tr><td>Total documentos</td><td>{report.total_documents}</td></tr>",
+                    f"      <tr><td>Faturas</td><td>{report.total_invoices}</td></tr>",
+                    f"      <tr><td>Extratos</td><td>{report.total_statements}</td></tr>",
+                    f"      <tr><td>Recibos</td><td>{report.total_receipts}</td></tr>",
+                    f"      <tr class='total'><td><strong>TOTAL</strong></td><td><strong>{report.total_amount:.2f}€</strong></td></tr>",
+                    "    </table>",
+                    "  </section>",
+                ]
+            )
 
             # Comparison
             if report.comparison:
                 comp = report.comparison
                 trend_class = "trend-" + comp.trend
-                html_parts.extend([
-                    "  <section class='comparison'>",
-                    "    <h3>Comparação com Mês Anterior</h3>",
-                    "    <table>",
-                    f"      <tr><td>Mês anterior</td><td>{comp.previous_total:.2f}€</td></tr>",
-                    f"      <tr><td>Mês atual</td><td>{comp.current_total:.2f}€</td></tr>",
-                    f"      <tr class='{trend_class}'><td>Diferença</td><td>{comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)</td></tr>",
-                    "    </table>",
-                    "  </section>",
-                ])
+                html_parts.extend(
+                    [
+                        "  <section class='comparison'>",
+                        "    <h3>Comparação com Mês Anterior</h3>",
+                        "    <table>",
+                        f"      <tr><td>Mês anterior</td><td>{comp.previous_total:.2f}€</td></tr>",
+                        f"      <tr><td>Mês atual</td><td>{comp.current_total:.2f}€</td></tr>",
+                        f"      <tr class='{trend_class}'><td>Diferença</td><td>{comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)</td></tr>",
+                        "    </table>",
+                        "  </section>",
+                    ]
+                )
 
             # Categories
             if report.by_category:
-                html_parts.extend([
-                    "  <section class='categories'>",
-                    "    <h3>Despesas por Categoria</h3>",
-                    "    <table>",
-                    "      <tr><th>Categoria</th><th>Docs</th><th>Total</th><th>%</th></tr>",
-                ])
+                html_parts.extend(
+                    [
+                        "  <section class='categories'>",
+                        "    <h3>Despesas por Categoria</h3>",
+                        "    <table>",
+                        "      <tr><th>Categoria</th><th>Docs</th><th>Total</th><th>%</th></tr>",
+                    ]
+                )
                 for cat in report.by_category:
                     html_parts.append(
                         f"      <tr><td>{cat.name}</td><td>{cat.count}</td>"
@@ -279,12 +285,14 @@ class HTMLFormatter(ReportFormatter):
 
             # Providers
             if report.by_provider:
-                html_parts.extend([
-                    "  <section class='providers'>",
-                    "    <h3>Top Fornecedores</h3>",
-                    "    <table>",
-                    "      <tr><th>Fornecedor</th><th>Docs</th><th>Total</th><th>Média</th></tr>",
-                ])
+                html_parts.extend(
+                    [
+                        "  <section class='providers'>",
+                        "    <h3>Top Fornecedores</h3>",
+                        "    <table>",
+                        "      <tr><th>Fornecedor</th><th>Docs</th><th>Total</th><th>Média</th></tr>",
+                    ]
+                )
                 for prov in report.by_provider[:10]:
                     html_parts.append(
                         f"      <tr><td>{prov.name}</td><td>{prov.document_count}</td>"
@@ -292,11 +300,13 @@ class HTMLFormatter(ReportFormatter):
                     )
                 html_parts.extend(["    </table>", "  </section>"])
 
-        html_parts.extend([
-            f"  <footer>Relatório gerado em {report.generated_at}</footer>",
-            "</body>",
-            "</html>",
-        ])
+        html_parts.extend(
+            [
+                f"  <footer>Relatório gerado em {report.generated_at}</footer>",
+                "</body>",
+                "</html>",
+            ]
+        )
 
         return "\n".join(html_parts)
 
@@ -347,13 +357,21 @@ class ExcelFormatter(ReportFormatter):
                 # Summary sheet
                 summary_data = {
                     "Métrica": [
-                        "Período", "Total Documentos", "Faturas",
-                        "Extratos", "Recibos", "Total (€)"
+                        "Período",
+                        "Total Documentos",
+                        "Faturas",
+                        "Extratos",
+                        "Recibos",
+                        "Total (€)",
                     ],
                     "Valor": [
-                        report.period_name, report.total_documents, report.total_invoices,
-                        report.total_statements, report.total_receipts, report.total_amount
-                    ]
+                        report.period_name,
+                        report.total_documents,
+                        report.total_invoices,
+                        report.total_statements,
+                        report.total_receipts,
+                        report.total_amount,
+                    ],
                 }
                 pd.DataFrame(summary_data).to_excel(writer, sheet_name="Resumo", index=False)
 

@@ -22,21 +22,24 @@ def organizar(
     ),
     reindexar: bool = typer.Option(
         False,
-        "--reindexar", "-r",
+        "--reindexar",
+        "-r",
         help="Limpar índice e reindexar tudo",
     ),
     estatisticas: bool = typer.Option(
         False,
-        "--stats", "-s",
+        "--stats",
+        "-s",
         help="Mostrar estatísticas do catálogo",
     ),
 ):
     """Organizar e catalogar documentos."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Organizador de documentos",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Organizador de documentos",
+            border_style="blue",
+        )
+    )
 
     indexer = DocumentIndexer()
 
@@ -56,7 +59,7 @@ def organizar(
         result = indexer.index_directory(dir_path)
 
     # Show results
-    console.print(f"\n[green]Indexação completa![/green]")
+    console.print("\n[green]Indexação completa![/green]")
 
     table = Table(title="Resultado da Indexação")
     table.add_column("Métrica", style="cyan")
@@ -139,17 +142,20 @@ def pesquisar(
     query: str = typer.Argument(..., help="Texto a pesquisar"),
     tipo: Optional[str] = typer.Option(
         None,
-        "--tipo", "-t",
+        "--tipo",
+        "-t",
         help="Filtrar por tipo: fatura, extrato, recibo, contrato, imposto",
     ),
     fornecedor: Optional[str] = typer.Option(
         None,
-        "--fornecedor", "-f",
+        "--fornecedor",
+        "-f",
         help="Filtrar por fornecedor",
     ),
     inicio: Optional[str] = typer.Option(
         None,
-        "--inicio", "-i",
+        "--inicio",
+        "-i",
         help="Data início (DD-MM-YYYY)",
     ),
     fim: Optional[str] = typer.Option(
@@ -159,16 +165,19 @@ def pesquisar(
     ),
     limite: int = typer.Option(
         20,
-        "--limite", "-l",
+        "--limite",
+        "-l",
         help="Número máximo de resultados",
     ),
 ):
     """Pesquisar documentos no catálogo."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        f"Pesquisa: [cyan]{query}[/cyan]",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+            f"Pesquisa: [cyan]{query}[/cyan]",
+            border_style="blue",
+        )
+    )
 
     indexer = DocumentIndexer()
 
@@ -224,14 +233,15 @@ def pesquisar(
         )
 
     console.print(table)
-    console.print(f"\n[dim]Use 'bank-extractor documento <ID>' para ver detalhes[/dim]")
+    console.print("\n[dim]Use 'bank-extractor documento <ID>' para ver detalhes[/dim]")
 
 
 def documento(
     doc_id: int = typer.Argument(..., help="ID do documento"),
     abrir: bool = typer.Option(
         False,
-        "--abrir", "-a",
+        "--abrir",
+        "-a",
         help="Abrir o ficheiro",
     ),
 ):
@@ -243,10 +253,12 @@ def documento(
         console.print(f"[red]Documento não encontrado: {doc_id}[/red]")
         raise typer.Exit(1)
 
-    console.print(Panel.fit(
-        f"[bold]Documento #{doc.id}[/bold]",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold]Documento #{doc.id}[/bold]",
+            border_style="blue",
+        )
+    )
 
     table = Table(show_header=False)
     table.add_column("Campo", style="cyan")
@@ -257,7 +269,9 @@ def documento(
     table.add_row("Tipo", doc.document_type)
     table.add_row("Estado", doc.status)
     table.add_row("Fornecedor", doc.provider.name if doc.provider else "-")
-    table.add_row("Data documento", doc.document_date.strftime("%d-%m-%Y") if doc.document_date else "-")
+    table.add_row(
+        "Data documento", doc.document_date.strftime("%d-%m-%Y") if doc.document_date else "-"
+    )
     table.add_row("Data vencimento", doc.due_date.strftime("%d-%m-%Y") if doc.due_date else "-")
     table.add_row("Valor", f"{doc.amount:.2f}€" if doc.amount else "-")
     table.add_row("Referência", doc.reference or "-")

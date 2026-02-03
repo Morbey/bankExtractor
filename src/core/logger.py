@@ -1,7 +1,6 @@
 """Logging configuration with Rich formatting."""
 
 import logging
-import sys
 from contextlib import contextmanager
 from typing import Optional
 
@@ -9,7 +8,6 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from .config import settings
-
 
 # Global flag to suppress logging during interactive sessions
 _logging_suppressed = False

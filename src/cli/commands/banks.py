@@ -17,21 +17,25 @@ def extrair(
     ),
     inicio: Optional[str] = typer.Option(
         None,
-        "--inicio", "-i",
+        "--inicio",
+        "-i",
         help="Data início (DD-MM-YYYY). Default: início do mês.",
     ),
     fim: Optional[str] = typer.Option(
         None,
-        "--fim", "-f",
+        "--fim",
+        "-f",
         help="Data fim (DD-MM-YYYY). Default: hoje.",
     ),
 ):
     """Extrair extratos bancários."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Extração de extratos bancários",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+            "Extração de extratos bancários",
+            border_style="blue",
+        )
+    )
 
     # Parse dates
     start_date = parse_date(inicio) if inicio else None

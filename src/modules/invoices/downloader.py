@@ -2,9 +2,8 @@
 
 import threading
 from datetime import date
-from pathlib import Path
 from queue import Queue
-from typing import Callable, Iterator, Optional
+from typing import Callable, Optional
 
 from src.core import get_logger
 
@@ -18,8 +17,6 @@ from .base import (
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
 from .inbox_db import InboxDatabase
-from .inbox_models import AttachmentStatus
-
 
 # Registry of available email providers
 EMAIL_PROVIDERS: dict[str, type[EmailProviderBase]] = {
@@ -285,15 +282,21 @@ class InvoiceDownloader:
                     self.logger.info(f"Encontrados {len(messages)} emails com faturas.")
 
                     if progress_callback:
-                        progress_callback("download", 0, len(messages), f"A processar {len(messages)} emails...")
+                        progress_callback(
+                            "download", 0, len(messages), f"A processar {len(messages)} emails..."
+                        )
 
                     # Download and stream each invoice
                     for i, msg in enumerate(messages):
                         if progress_callback:
                             subject = msg.get("Subject", "")[:40]
-                            progress_callback("download", i + 1, len(messages), f"A processar: {subject}...")
+                            progress_callback(
+                                "download", i + 1, len(messages), f"A processar: {subject}..."
+                            )
 
-                        invoices = provider.download_attachments(msg, filter_to_use.attachment_extensions)
+                        invoices = provider.download_attachments(
+                            msg, filter_to_use.attachment_extensions
+                        )
 
                         # Put each invoice in queue immediately
                         for invoice in invoices:

@@ -7,8 +7,8 @@ from typing import Optional
 
 from sqlalchemy import func, select
 
-from src.core import get_logger, settings
-from src.modules.organizer import Document, DocumentType, Provider, get_session
+from src.core import get_logger
+from src.modules.organizer import Document, DocumentType, get_session
 
 from .models import (
     DocumentSummary,
@@ -157,9 +157,7 @@ class ReportGenerator:
 
     def _aggregate_by_provider(self, documents: list[Document]) -> list[ProviderSummary]:
         """Aggregate documents by provider."""
-        provider_totals = defaultdict(
-            lambda: {"amount": 0.0, "count": 0, "category": None}
-        )
+        provider_totals = defaultdict(lambda: {"amount": 0.0, "count": 0, "category": None})
 
         for doc in documents:
             provider_name = doc.provider.name if doc.provider else "Desconhecido"

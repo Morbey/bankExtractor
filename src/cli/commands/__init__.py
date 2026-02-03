@@ -2,12 +2,14 @@
 
 This package contains all CLI commands organized by domain:
 - banks: Bank statement extraction
-- invoices: Invoice download and management
 - config: Configuration and credentials
 - documents: Document organization and search
+- email_cli: Email document download and inbox management
+- expenses: Expense tracking and budgets
+- financeiro_cli: Financial analysis (dashboard, invoices, reports)
+- invoices: Invoice download core functions
 - processing: Document processing, entities, and rules
 - reports: Financial reports
-- expenses: Expense tracking and budgets
 """
 
 from src.cli.commands.banks import extrair
@@ -19,7 +21,6 @@ from src.cli.commands.invoices import (
     faturas_inbox,
     faturas_processar_inbox,
     faturas_scrape,
-    gerir_faturas,
 )
 from src.cli.commands.processing import entidades, pendentes, processar, regras
 from src.cli.commands.reports import enviar, relatorio, relatorio_anual
@@ -27,12 +28,6 @@ from src.cli.commands.reports import enviar, relatorio, relatorio_anual
 __all__ = [
     # Banks
     "extrair",
-    # Invoices
-    "gerir_faturas",
-    "faturas",
-    "faturas_scrape",
-    "faturas_inbox",
-    "faturas_processar_inbox",
     # Config
     "config",
     "credenciais",
@@ -41,6 +36,11 @@ __all__ = [
     "organizar",
     "pesquisar",
     "documento",
+    # Email/Invoices (core functions)
+    "faturas",
+    "faturas_scrape",
+    "faturas_inbox",
+    "faturas_processar_inbox",
     # Processing
     "processar",
     "pendentes",

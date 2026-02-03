@@ -64,6 +64,7 @@ class ExpenseTracker:
             if year and month:
                 from calendar import monthrange
                 from datetime import datetime
+
                 start = datetime(year, month, 1)
                 _, last = monthrange(year, month)
                 end = datetime(year, month, last, 23, 59, 59)
@@ -178,14 +179,13 @@ class ExpenseTracker:
             stmt = select(Expense)
 
             if year:
-                stmt = stmt.where(
-                    Expense.expense_date >= date(year, 1, 1)
-                ).where(
+                stmt = stmt.where(Expense.expense_date >= date(year, 1, 1)).where(
                     Expense.expense_date <= date(year, 12, 31)
                 )
 
             if year and month:
                 from calendar import monthrange
+
                 _, last = monthrange(year, month)
                 stmt = stmt.where(Expense.expense_date >= date(year, month, 1))
                 stmt = stmt.where(Expense.expense_date <= date(year, month, last))
@@ -255,7 +255,7 @@ class ExpenseTracker:
         with get_session() as session:
             stmt = select(Budget)
             if active_only:
-                stmt = stmt.where(Budget.is_active == True)
+                stmt = stmt.where(Budget.is_active)
             return list(session.execute(stmt).scalars().all())
 
     def delete_budget(self, category: ExpenseCategory) -> bool:
@@ -294,9 +294,9 @@ class ExpenseTracker:
         status = []
 
         with get_session() as session:
-            budgets = session.execute(
-                select(Budget).where(Budget.is_active == True)
-            ).scalars().all()
+            budgets = (
+                session.execute(select(Budget).where(Budget.is_active)).scalars().all()
+            )
 
             _, last = monthrange(year, month)
             start = date(year, month, 1)
@@ -304,34 +304,38 @@ class ExpenseTracker:
 
             for budget in budgets:
                 # Get spent amount
-                spent = session.execute(
-                    select(func.sum(Expense.amount))
-                    .where(Expense.category == budget.category)
-                    .where(Expense.expense_date >= start)
-                    .where(Expense.expense_date <= end)
-                ).scalar() or 0.0
+                spent = (
+                    session.execute(
+                        select(func.sum(Expense.amount))
+                        .where(Expense.category == budget.category)
+                        .where(Expense.expense_date >= start)
+                        .where(Expense.expense_date <= end)
+                    ).scalar()
+                    or 0.0
+                )
 
                 remaining = budget.monthly_limit - spent
                 percentage = (spent / budget.monthly_limit * 100) if budget.monthly_limit > 0 else 0
 
                 try:
                     cat_name = CATEGORY_NAMES.get(
-                        ExpenseCategory(budget.category),
-                        budget.category.title()
+                        ExpenseCategory(budget.category), budget.category.title()
                     )
                 except ValueError:
                     cat_name = budget.category.title()
 
-                status.append({
-                    "category": budget.category,
-                    "category_name": cat_name,
-                    "limit": budget.monthly_limit,
-                    "spent": spent,
-                    "remaining": remaining,
-                    "percentage": percentage,
-                    "is_exceeded": percentage >= 100,
-                    "is_warning": percentage >= budget.warning_threshold * 100,
-                })
+                status.append(
+                    {
+                        "category": budget.category,
+                        "category_name": cat_name,
+                        "limit": budget.monthly_limit,
+                        "spent": spent,
+                        "remaining": remaining,
+                        "percentage": percentage,
+                        "is_exceeded": percentage >= 100,
+                        "is_warning": percentage >= budget.warning_threshold * 100,
+                    }
+                )
 
         return sorted(status, key=lambda x: x["percentage"], reverse=True)
 
@@ -375,7 +379,7 @@ class ExpenseTracker:
         with get_session() as session:
             stmt = select(RecurringExpense)
             if active_only:
-                stmt = stmt.where(RecurringExpense.is_active == True)
+                stmt = stmt.where(RecurringExpense.is_active)
             return list(session.execute(stmt).scalars().all())
 
     # Analysis shortcuts

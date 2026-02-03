@@ -7,7 +7,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Optional
 
-from src.core import CredentialManager, get_logger, settings
+from src.core import CredentialManager, get_logger
 
 from .formatters import HTMLFormatter
 from .models import ReportData
@@ -173,40 +173,50 @@ class ReportMailer:
         # Comparison
         if report.comparison:
             comp = report.comparison
-            lines.extend([
-                "COMPARAÇÃO COM MÊS ANTERIOR",
-                "-" * 20,
-                f"Mês anterior: {comp.previous_total:.2f}€",
-                f"Mês atual: {comp.current_total:.2f}€",
-                f"Diferença: {comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)",
-                "",
-            ])
+            lines.extend(
+                [
+                    "COMPARAÇÃO COM MÊS ANTERIOR",
+                    "-" * 20,
+                    f"Mês anterior: {comp.previous_total:.2f}€",
+                    f"Mês atual: {comp.current_total:.2f}€",
+                    f"Diferença: {comp.difference:+.2f}€ ({comp.percentage_change:+.1f}%)",
+                    "",
+                ]
+            )
 
         # Categories
         if report.by_category:
-            lines.extend([
-                "DESPESAS POR CATEGORIA",
-                "-" * 20,
-            ])
+            lines.extend(
+                [
+                    "DESPESAS POR CATEGORIA",
+                    "-" * 20,
+                ]
+            )
             for cat in report.by_category:
                 lines.append(f"  {cat.name}: {cat.amount:.2f}€ ({cat.percentage:.1f}%)")
             lines.append("")
 
         # Providers
         if report.by_provider:
-            lines.extend([
-                "TOP FORNECEDORES",
-                "-" * 20,
-            ])
+            lines.extend(
+                [
+                    "TOP FORNECEDORES",
+                    "-" * 20,
+                ]
+            )
             for prov in report.by_provider[:10]:
-                lines.append(f"  {prov.name}: {prov.total_amount:.2f}€ ({prov.document_count} docs)")
+                lines.append(
+                    f"  {prov.name}: {prov.total_amount:.2f}€ ({prov.document_count} docs)"
+                )
             lines.append("")
 
-        lines.extend([
-            "-" * 50,
-            f"Relatório gerado em {report.generated_at}",
-            "Bank Extractor - Gestor Financeiro Pessoal",
-        ])
+        lines.extend(
+            [
+                "-" * 50,
+                f"Relatório gerado em {report.generated_at}",
+                "Bank Extractor - Gestor Financeiro Pessoal",
+            ]
+        )
 
         return "\n".join(lines)
 

@@ -66,12 +66,14 @@ bankExtractor/
 │       ├── common.py            # Shared utilities (console, parse_date)
 │       └── commands/            # Command modules by domain
 │           ├── banks.py         # extrair
-│           ├── invoices.py      # faturas, gerir_faturas, faturas_limpar, faturas_scrape, faturas_inbox, faturas_processar_inbox
 │           ├── config.py        # config, credenciais, versao
 │           ├── documents.py     # organizar, pesquisar, documento
+│           ├── email_cli.py     # email group (download, scrape, inbox)
+│           ├── expenses.py      # despesas, orcamento, alertas, tendencias
+│           ├── financeiro_cli.py # financeiro group (resumo, faturas, despesas, orcamento, relatorio)
+│           ├── invoices.py      # Core invoice functions (used by email_cli)
 │           ├── processing.py    # processar, pendentes, entidades, regras
-│           ├── reports.py       # relatorio, relatorio_anual, enviar
-│           └── expenses.py      # despesas, orcamento, alertas, tendencias
+│           └── reports.py       # relatorio, relatorio_anual, enviar
 ├── data/
 │   ├── extratos/                # Downloaded bank statements
 │   ├── faturas/                 # Organized invoices
@@ -102,37 +104,27 @@ bankExtractor/
 
 ## CLI Commands
 
-O CLI está organizado em **7 grupos de comandos** (por ordem alfabética):
+O CLI esta organizado em **6 grupos de comandos** (por ordem alfabetica):
 
 ```
 bank-extractor
-├── config       # Configuração da aplicação
-├── despesas     # Tracking de despesas
-├── documentos   # Gestão de documentos
-├── entidades    # Gestão de entidades
-├── extratos     # Extração de extratos bancários
-├── faturas      # Gestão de faturas
-└── relatorios   # Relatórios financeiros
+├── config       # Configuracao da aplicacao
+├── documentos   # Processamento e pesquisa de documentos
+├── email        # Fonte de documentos por email
+├── entidades    # Gestao de entidades e regras
+├── extratos     # Extracao de extratos bancarios
+└── financeiro   # Analise financeira
 ```
 
-### config - Configuração
+### config - Configuracao
 ```bash
-bank-extractor config credenciais <banco>   # Gerir credenciais
-bank-extractor config ver                   # Mostrar configuração
-bank-extractor config versao                # Mostrar versão
+bank-extractor config credenciais <servico>     # Gerir credenciais (cgd, ctt, gmail, hotmail)
+bank-extractor config ver                       # Mostrar configuracao
+bank-extractor config versao                    # Mostrar versao
 ```
 
-### despesas - Tracking de Despesas
+### documentos - Processamento e Pesquisa
 ```bash
-bank-extractor despesas alertas [--verificar] [--limpar]
-bank-extractor despesas orcamento [categoria] [--valor N] [--listar] [--remover]
-bank-extractor despesas tendencias [--meses N]
-bank-extractor despesas ver [MM-YYYY|atual] [--importar] [--categoria X]
-```
-
-### documentos - Gestão de Documentos
-```bash
-bank-extractor documentos organizar [directory] [--reindexar] [--stats]
 bank-extractor documentos pendentes [--listar] [--processar] [--stats] [--razao X] [--restaurar ID]
 bank-extractor documentos pesquisar <query> [--tipo fatura|extrato] [--fornecedor X]
 bank-extractor documentos processar [directory] [--interativo/--auto] [--mover] [--recursivo]
@@ -147,71 +139,71 @@ Options for `pendentes`:
 - `--reprocessar ID`: Remove from ignored and reprocess immediately
 - `--limpar`: Clear ignored documents queue
 
-### entidades - Gestão de Entidades
+### email - Fonte de Documentos por Email
 ```bash
-bank-extractor entidades gerir listar|criar|ver|editar [--nome X] [--pasta X] [--nif X] [--iban X]
-bank-extractor entidades regras [--listar] [--criar] [--remover ID]
+# Download e processamento (fluxo principal)
+bank-extractor email download [gmail|hotmail|todos] [--dias N] [--conta NAME]
+bank-extractor email download --paralelo         # Processar enquanto descarrega
+
+# Scrape (so descarrega para BD inbox, sem processar)
+bank-extractor email scrape gmail --dias 60
+
+# Gestao do inbox
+bank-extractor email inbox --stats               # Ver estado do inbox
+bank-extractor email inbox --listar              # Listar pendentes
+bank-extractor email inbox --migrar              # Migrar dados existentes
 ```
 
-### extratos - Extração de Extratos Bancários
+**Opcoes comuns de download:**
+- `--dias/-d N`: Numero de dias a pesquisar (default: 30)
+- `--conta NAME`: Nome da conta (pessoal, empresa)
+- `--paralelo/-p`: Processar enquanto descarrega (streaming mode)
+- `--config/-c`: Configurar credenciais
+
+**Base de dados inbox:** `data/inbox/inbox.db`
+- Deduplicacao por Message-ID (email) e SHA-256 (ficheiro)
+- Tracking de estado: pending, processed, ignored, deleted
+
+### entidades - Gestao de Entidades
+```bash
+bank-extractor entidades criar --nome "Nome" [--pasta X] [--nif X] [--iban X]
+bank-extractor entidades listar
+bank-extractor entidades regras listar|ver|editar|eliminar|activar|desactivar
+```
+
+### extratos - Extracao de Extratos Bancarios
 ```bash
 bank-extractor extratos cgd [--inicio DD-MM-YYYY] [--fim DD-MM-YYYY]
 bank-extractor extratos ctt [--inicio DD-MM-YYYY] [--fim DD-MM-YYYY]
 bank-extractor extratos todos [--inicio DD-MM-YYYY] [--fim DD-MM-YYYY]
 ```
 
-### faturas - Gestão de Faturas
-
-O grupo `faturas` tem subcomandos para gestão completa de faturas:
-
+### financeiro - Analise Financeira
 ```bash
-# Credenciais
-bank-extractor faturas credenciais gmail         # Limpar credenciais
+# Dashboard (resumo rapido)
+bank-extractor financeiro resumo [MM-YYYY|atual]
 
-# Download e processamento (fluxo principal)
-bank-extractor faturas download [gmail|hotmail|todos] [--dias N] [--conta NAME]
-bank-extractor faturas download --paralelo       # Processar enquanto descarrega
+# Faturas
+bank-extractor financeiro faturas [--por-pagar] [--pagas] [--categoria X]
 
-# Gestão de ficheiros
-bank-extractor faturas gerir organizar           # Organizar ficheiros
-bank-extractor faturas gerir stats               # Estatísticas
+# Despesas
+bank-extractor financeiro despesas [MM-YYYY|atual] [--importar] [--categoria X]
 
-# Inbox system (scrape agora, processar depois)
-bank-extractor faturas inbox --stats             # Ver estado do inbox
-bank-extractor faturas inbox --listar            # Listar pendentes
-bank-extractor faturas inbox --migrar            # Migrar dados existentes
+# Orcamentos
+bank-extractor financeiro orcamento [categoria] [--valor N] [--listar] [--remover]
 
-# Processar pendentes do inbox
-bank-extractor faturas processar --limite 10     # Processar N pendentes
-
-# Scrape (só descarrega para BD)
-bank-extractor faturas scrape gmail --dias 60
+# Relatorios
+bank-extractor financeiro relatorio <MM-YYYY|atual> [--formato console|html|excel]
+bank-extractor financeiro relatorio-anual <ano> [--formato html|excel]
 ```
 
-**Subcomandos (alfabético):**
-- `credenciais`: Gestão de credenciais de email
-- `download`: Descarregar e processar faturas (fluxo principal com deduplicação)
-- `gerir`: Organização de ficheiros e estatísticas
-- `inbox`: Gestão do inbox (stats, listar, migrar)
-- `processar`: Processar anexos pendentes do inbox
-- `scrape`: Apenas descarregar para BD inbox (sem processar)
-
-**Opções comuns de download:**
-- `--dias/-d N`: Número de dias a pesquisar (default: 30)
-- `--conta NAME`: Nome da conta (pessoal, empresa)
-- `--paralelo/-p`: Processar enquanto descarrega (streaming mode)
-- `--config/-c`: Configurar credenciais
-
-**Base de dados inbox:** `data/inbox/inbox.db`
-- Deduplicação por Message-ID (email) e SHA-256 (ficheiro)
-- Tracking de estado: pending, processed, ignored, deleted
-
-### relatorios - Relatórios Financeiros
-```bash
-bank-extractor relatorios anual <ano> [--formato html|excel]
-bank-extractor relatorios enviar <MM-YYYY> <email> [--provider gmail|hotmail]
-bank-extractor relatorios mensal <MM-YYYY|atual> [--formato console|html|excel]
-```
+**Subcomandos (alfabetico):**
+- `despesas`: Ver despesas por categoria/periodo
+- `faturas`: Listar faturas (por pagar, pagas)
+- `orcamento`: Gerir orcamentos por categoria
+- `relatorio`: Gerar relatorio financeiro mensal
+- `relatorio-anual`: Gerar relatorio anual
+- `resumo`: Dashboard com faturas por pagar e despesas do mes
 
 ## Document Organization Structure
 
@@ -315,9 +307,9 @@ Copy `.env.example` to `.env` and configure:
 
 ## Additional Documentation
 
-- `PROJECT_VISION.md` - Detailed project vision and roadmap
-- `CODE_VALIDATOR_AGENT.md` - Code validation agent persona and guidelines
+- `PROJECT_VISION.md` - Project vision and roadmap
 - `README.md` - User guide and command reference
+- `ARCHITECTURE.md` - Technical architecture documentation
 - `TROUBLESHOOTING.md` - Common issues and solutions
 
 ## Important Notes

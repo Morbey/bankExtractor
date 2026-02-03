@@ -7,17 +7,15 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
-    Column,
     Date,
     DateTime,
     Float,
-    ForeignKey,
     Integer,
     String,
     Text,
     create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from src.core import settings
 
@@ -78,7 +76,9 @@ class Budget(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
 
     def __repr__(self) -> str:
         return f"Budget(category={self.category!r}, limit={self.monthly_limit})"
@@ -158,7 +158,9 @@ class RecurringExpense(Base):
     category: Mapped[str] = mapped_column(String(50))
     expected_amount: Mapped[float] = mapped_column(Float)
     amount_tolerance: Mapped[float] = mapped_column(Float, default=0.1)  # 10% tolerance
-    frequency: Mapped[str] = mapped_column(String(20), default="monthly")  # monthly, quarterly, yearly
+    frequency: Mapped[str] = mapped_column(
+        String(20), default="monthly"
+    )  # monthly, quarterly, yearly
     expected_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Day of month
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

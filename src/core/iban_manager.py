@@ -19,7 +19,9 @@ class IBANManager:
     """Manages IBAN to folder name mappings."""
 
     # Regex pattern for Portuguese IBAN
-    IBAN_PATTERN = re.compile(r"PT50\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{1}", re.IGNORECASE)
+    IBAN_PATTERN = re.compile(
+        r"PT50\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{1}", re.IGNORECASE
+    )
 
     def __init__(self, config_path: Optional[Path] = None):
         """Initialize IBAN manager.
@@ -142,8 +144,7 @@ class IBANManager:
         console.print(f"[dim]IBAN completo: {iban}[/dim]")
 
         folder_name = Prompt.ask(
-            "De quem é esta conta? (nome para a pasta)",
-            default="conta_desconhecida"
+            "De quem é esta conta? (nome para a pasta)", default="conta_desconhecida"
         )
 
         # Sanitize folder name

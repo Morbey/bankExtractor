@@ -28,21 +28,24 @@ def processar(
     ),
     mover: bool = typer.Option(
         False,
-        "--mover", "-m",
+        "--mover",
+        "-m",
         help="Mover ficheiros em vez de copiar",
     ),
     recursivo: bool = typer.Option(
         False,
-        "--recursivo", "-r",
+        "--recursivo",
+        "-r",
         help="Processar subdiretórios",
     ),
 ):
     """Processar documentos - classificar, identificar entidades e organizar."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Processamento de Documentos",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Processamento de Documentos",
+            border_style="blue",
+        )
+    )
 
     source_dir = Path(diretorio) if diretorio else settings.data_dir / "temp"
 
@@ -55,7 +58,7 @@ def processar(
     console.print(f"[dim]Ação: {'Mover' if mover else 'Copiar'}[/dim]\n")
 
     processor = DocumentProcessor()
-    results = processor.process_directory(
+    processor.process_directory(
         source_dir,
         interactive=interativo,
         move=mover,
@@ -133,7 +136,9 @@ def _show_pending_summary():
             table.add_row("...", f"... e mais {len(truly_unprocessed) - 20} ficheiros", "")
 
         console.print(table)
-        console.print(f"[dim]Use: bank-extractor processar {settings.faturas_temp_dir} --interativo[/dim]\n")
+        console.print(
+            f"[dim]Use: bank-extractor processar {settings.faturas_temp_dir} --interativo[/dim]\n"
+        )
 
     # Section 2: Ignored documents (in registry)
     if ignored_docs:
@@ -166,12 +171,14 @@ def _show_pending_summary():
 def pendentes(
     processar_todos: bool = typer.Option(
         False,
-        "--processar", "-p",
+        "--processar",
+        "-p",
         help="Processar todos os documentos pendentes",
     ),
     listar: bool = typer.Option(
         False,
-        "--listar", "-l",
+        "--listar",
+        "-l",
         help="Listar documentos pendentes",
     ),
     limpar: bool = typer.Option(
@@ -181,12 +188,14 @@ def pendentes(
     ),
     razao: Optional[str] = typer.Option(
         None,
-        "--razao", "-r",
+        "--razao",
+        "-r",
         help="Filtrar por razao (spam, duplicado, pessoal, irrelevante, incompleto, outro, sem_razao)",
     ),
     stats: bool = typer.Option(
         False,
-        "--stats", "-s",
+        "--stats",
+        "-s",
         help="Mostrar estatisticas por razao",
     ),
     restaurar: Optional[str] = typer.Option(
@@ -201,11 +210,12 @@ def pendentes(
     ),
 ):
     """Gerir documentos pendentes de classificacao."""
-    console.print(Panel.fit(
-        f"[bold yellow]Bank Extractor v{__version__}[/bold yellow]\n"
-        "Documentos Pendentes",
-        border_style="yellow",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold yellow]Bank Extractor v{__version__}[/bold yellow]\n" "Documentos Pendentes",
+            border_style="yellow",
+        )
+    )
 
     registry = get_document_registry()
 
@@ -223,16 +233,20 @@ def pendentes(
             console.print("[dim]Use 'bank-extractor pendentes --listar' para ver os IDs[/dim]")
             return
 
-        console.print(f"\n[bold]Documento encontrado:[/bold]")
+        console.print("\n[bold]Documento encontrado:[/bold]")
         console.print(f"  Ficheiro: [cyan]{found.get('file_name', 'N/A')}[/cyan]")
         console.print(f"  Remetente: [cyan]{found.get('sender', 'N/A')}[/cyan]")
-        console.print(f"  Razao: [yellow]{found.get('ignore_reason_label') or found.get('pending_reason', 'N/A')}[/yellow]")
+        console.print(
+            f"  Razao: [yellow]{found.get('ignore_reason_label') or found.get('pending_reason', 'N/A')}[/yellow]"
+        )
 
         if Confirm.ask("\nRemover da lista de ignorados?", default=True):
             registry.remove_from_pending(found["id"])
             console.print("[green]Documento removido da lista de ignorados.[/green]")
             console.print(f"[dim]O ficheiro continua em: {found.get('file_path', 'N/A')}[/dim]")
-            console.print("[dim]Use 'bank-extractor processar <pasta> --interativo' para reprocessar[/dim]")
+            console.print(
+                "[dim]Use 'bank-extractor processar <pasta> --interativo' para reprocessar[/dim]"
+            )
         return
 
     # Handle reprocessar (remove from ignored and process immediately)
@@ -281,7 +295,7 @@ def pendentes(
         result, _, _ = processor.process_invoice(invoice, interactive=True, move=True)
 
         if result.success:
-            console.print(f"[green]Documento processado com sucesso![/green]")
+            console.print("[green]Documento processado com sucesso![/green]")
             if result.destination_path:
                 console.print(f"[dim]Movido para: {result.destination_path}[/dim]")
         else:
@@ -308,7 +322,7 @@ def pendentes(
         ignored_file_names = {doc.get("file_name", "") for doc in ignored_docs}
         truly_unprocessed = [f for f in unprocessed_files if f.name not in ignored_file_names]
 
-        console.print(f"\n[bold]Resumo Geral:[/bold]")
+        console.print("\n[bold]Resumo Geral:[/bold]")
         console.print(f"  - Ficheiros por processar: [cyan]{len(truly_unprocessed)}[/cyan]")
         console.print(f"  - Documentos ignorados: [yellow]{len(ignored_docs)}[/yellow]")
         console.print(f"  - [bold]Total: {len(truly_unprocessed) + len(ignored_docs)}[/bold]")
@@ -316,19 +330,21 @@ def pendentes(
         # Show stats by reason for ignored documents
         pending_stats = registry.get_pending_stats()
         if pending_stats:
-            console.print(f"\n[bold]Ignorados por Razao:[/bold]")
+            console.print("\n[bold]Ignorados por Razao:[/bold]")
             table = Table()
             table.add_column("Razao", style="cyan")
             table.add_column("Codigo", style="dim")
             table.add_column("Total", style="yellow", justify="right")
 
-            for reason_label, (reason_code, count) in sorted(pending_stats.items(), key=lambda x: -x[1][1]):
+            for reason_label, (reason_code, count) in sorted(
+                pending_stats.items(), key=lambda x: -x[1][1]
+            ):
                 table.add_row(_safe_filename(reason_label, 30), reason_code, str(count))
 
             console.print(table)
 
-        console.print(f"\n[dim]Use: bank-extractor pendentes --listar[/dim]")
-        console.print(f"[dim]Use: bank-extractor pendentes --razao <codigo>[/dim]")
+        console.print("\n[dim]Use: bank-extractor pendentes --listar[/dim]")
+        console.print("[dim]Use: bank-extractor pendentes --razao <codigo>[/dim]")
         return
 
     if razao:
@@ -397,7 +413,9 @@ def pendentes(
 
         # Show session summary
         processor.show_session_summary()
-        console.print(f"\n[green]Processados {processed} de {len(unprocessed_files)} ficheiros.[/green]")
+        console.print(
+            f"\n[green]Processados {processed} de {len(unprocessed_files)} ficheiros.[/green]"
+        )
 
 
 def entidades(
@@ -407,22 +425,26 @@ def entidades(
     ),
     nome: Optional[str] = typer.Option(
         None,
-        "--nome", "-n",
+        "--nome",
+        "-n",
         help="Nome da entidade",
     ),
     pasta: Optional[str] = typer.Option(
         None,
-        "--pasta", "-p",
+        "--pasta",
+        "-p",
         help="Nome da pasta",
     ),
     tipo: Optional[str] = typer.Option(
         None,
-        "--tipo", "-t",
+        "--tipo",
+        "-t",
         help="Tipo: empresa, pessoa, banco, proprio",
     ),
     scope: Optional[str] = typer.Option(
         None,
-        "--scope", "-s",
+        "--scope",
+        "-s",
         help="Âmbito contabilístico: pessoal, empresa",
     ),
     nif: Optional[str] = typer.Option(
@@ -442,11 +464,12 @@ def entidades(
     ),
 ):
     """Gerir entidades (fornecedores, clientes, etc.)."""
-    console.print(Panel.fit(
-        f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
-        "Gestão de Entidades",
-        border_style="green",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold green]Bank Extractor v{__version__}[/bold green]\n" "Gestão de Entidades",
+            border_style="green",
+        )
+    )
 
     registry = get_document_registry()
     acao_lower = acao.lower()
@@ -456,7 +479,9 @@ def entidades(
 
         if not entities:
             console.print("\n[yellow]Nenhuma entidade registada.[/yellow]")
-            console.print("[dim]Use: bank-extractor entidades criar --nome \"Nome\" --pasta \"pasta\"[/dim]")
+            console.print(
+                '[dim]Use: bank-extractor entidades criar --nome "Nome" --pasta "pasta"[/dim]'
+            )
             return
 
         table = Table(title=f"Entidades Registadas ({len(entities)})")
@@ -472,7 +497,7 @@ def entidades(
             if len(e.nifs) > 2:
                 nifs_display += f" (+{len(e.nifs) - 2})"
 
-            scope_display = e.scope.value if hasattr(e, 'scope') else "empresa"
+            scope_display = e.scope.value if hasattr(e, "scope") else "empresa"
 
             table.add_row(
                 e.id[:10],
@@ -518,7 +543,7 @@ def entidades(
             ibans=ibans_list,
         )
 
-        console.print(f"\n[green]Entidade criada com sucesso![/green]")
+        console.print("\n[green]Entidade criada com sucesso![/green]")
         registry.show_entity_summary(entity.id)
 
     elif acao_lower == "ver":
@@ -549,7 +574,7 @@ def entidades(
 
         if iban:
             registry.add_iban_to_entity(entity_id, iban)
-            console.print(f"[green]IBAN adicionado[/green]")
+            console.print("[green]IBAN adicionado[/green]")
 
         if nome:
             entity.name = nome
@@ -581,7 +606,7 @@ def entidades(
             console.print(f"[red]Entidade não encontrada: {entity_id}[/red]")
             raise typer.Exit(1)
 
-        console.print(f"\n[yellow]Vai eliminar a entidade:[/yellow]")
+        console.print("\n[yellow]Vai eliminar a entidade:[/yellow]")
         console.print(f"  Nome: {entity.name}")
         console.print(f"  Pasta: {entity.folder_name}")
         console.print(f"  Âmbito: {entity.scope.value}")
@@ -610,21 +635,25 @@ def regras(
     ),
     nome: Optional[str] = typer.Option(
         None,
-        "--nome", "-n",
+        "--nome",
+        "-n",
         help="Novo nome da regra (para editar)",
     ),
     prioridade: Optional[int] = typer.Option(
         None,
-        "--prioridade", "-p",
+        "--prioridade",
+        "-p",
         help="Nova prioridade (menor = mais prioritário)",
     ),
 ):
     """Gerir regras de classificação automática."""
-    console.print(Panel.fit(
-        f"[bold magenta]Bank Extractor v{__version__}[/bold magenta]\n"
-        "Regras de Classificação",
-        border_style="magenta",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold magenta]Bank Extractor v{__version__}[/bold magenta]\n"
+            "Regras de Classificação",
+            border_style="magenta",
+        )
+    )
 
     rules_engine = get_rules_engine()
     acao_lower = acao.lower()
@@ -634,7 +663,9 @@ def regras(
 
         if not rules:
             console.print("\n[yellow]Nenhuma regra de classificação definida.[/yellow]")
-            console.print("[dim]As regras são criadas automaticamente ao identificar entidades.[/dim]")
+            console.print(
+                "[dim]As regras são criadas automaticamente ao identificar entidades.[/dim]"
+            )
             return
 
         table = Table(title=f"Regras de Classificação ({len(rules)})")

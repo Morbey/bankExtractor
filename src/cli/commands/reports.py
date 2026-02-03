@@ -6,7 +6,6 @@ from typing import Optional
 
 import typer
 from rich.panel import Panel
-from rich.table import Table
 
 from src import __version__
 from src.cli.common import console
@@ -28,12 +27,14 @@ def relatorio(
     ),
     formato: str = typer.Option(
         "console",
-        "--formato", "-f",
+        "--formato",
+        "-f",
         help="Formato: console, html, excel",
     ),
     output: Optional[str] = typer.Option(
         None,
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Ficheiro de output (para html/excel)",
     ),
     sem_comparacao: bool = typer.Option(
@@ -43,11 +44,12 @@ def relatorio(
     ),
 ):
     """Gerar relatório financeiro mensal."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Relatórios Financeiros",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Relatórios Financeiros",
+            border_style="blue",
+        )
+    )
 
     # Parse month
     if mes.lower() == "atual":
@@ -121,21 +123,24 @@ def enviar(
     ),
     provider: str = typer.Option(
         "gmail",
-        "--provider", "-p",
+        "--provider",
+        "-p",
         help="Provider de email para envio: gmail, hotmail",
     ),
     anexar_docs: bool = typer.Option(
         False,
-        "--anexar", "-a",
+        "--anexar",
+        "-a",
         help="Anexar documentos do período",
     ),
 ):
     """Enviar relatório por email."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        "Envio de Relatório",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" "Envio de Relatório",
+            border_style="blue",
+        )
+    )
 
     # Parse month
     if mes.lower() == "atual":
@@ -165,7 +170,7 @@ def enviar(
     attachments = []
     if anexar_docs and report.documents:
         for doc in report.documents:
-            doc_path = Path(doc.file_name) if doc.file_name else None
+            Path(doc.file_name) if doc.file_name else None
             # We'd need the actual path from the indexer
             # For now, just note that attachments would be added here
 
@@ -188,21 +193,24 @@ def relatorio_anual(
     ano: int = typer.Argument(..., help="Ano do relatório"),
     formato: str = typer.Option(
         "console",
-        "--formato", "-f",
+        "--formato",
+        "-f",
         help="Formato: console, html, excel",
     ),
     output: Optional[str] = typer.Option(
         None,
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Ficheiro de output",
     ),
 ):
     """Gerar relatório anual."""
-    console.print(Panel.fit(
-        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
-        f"Relatório Anual {ano}",
-        border_style="blue",
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n" f"Relatório Anual {ano}",
+            border_style="blue",
+        )
+    )
 
     console.print(f"\n[cyan]A gerar relatório anual para {ano}...[/cyan]")
 

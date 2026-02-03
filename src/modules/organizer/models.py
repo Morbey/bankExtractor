@@ -130,10 +130,14 @@ class Document(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
 
     # Source information
-    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # gmail, hotmail, manual
+    source: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )  # gmail, hotmail, manual
     source_email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     def __repr__(self) -> str:

@@ -10,7 +10,6 @@ from src import __version__
 from src.cli.common import BANKS, console
 from src.core import CredentialManager, settings
 
-
 # Email providers supported
 EMAIL_PROVIDERS = ["gmail", "hotmail"]
 
@@ -20,10 +19,12 @@ ACCOUNT_NAMES = ["pessoal", "empresa", "trabalho", "personal", "work"]
 
 def config():
     """Mostrar configuração atual."""
-    console.print(Panel.fit(
-        "[bold]Configuração Atual[/bold]",
-        border_style="green",
-    ))
+    console.print(
+        Panel.fit(
+            "[bold]Configuração Atual[/bold]",
+            border_style="green",
+        )
+    )
 
     table = Table()
     table.add_column("Setting", style="cyan")
@@ -90,7 +91,8 @@ def credenciais(
     ),
     confirmar: bool = typer.Option(
         False,
-        "--sim", "-y",
+        "--sim",
+        "-y",
         help="Confirmar eliminação sem perguntar",
     ),
 ):
@@ -165,12 +167,13 @@ def credenciais(
                 console.print(f"[yellow]Não existem credenciais para {servico.upper()}.[/yellow]")
                 return
 
-            console.print(f"\n[bold red]APAGAR credenciais de:[/bold red]")
+            console.print("\n[bold red]APAGAR credenciais de:[/bold red]")
             console.print(f"  Banco: {servico.upper()}")
             console.print(f"  Utilizador: {username}")
 
             if not confirmar:
                 from rich.prompt import Confirm
+
                 if not Confirm.ask("\n[red]Tem a certeza?[/red]", default=False):
                     console.print("[dim]Operação cancelada.[/dim]")
                     return
@@ -194,13 +197,14 @@ def credenciais(
             console.print(f"[yellow]Não existem credenciais para {display_name}.[/yellow]")
             return
 
-        console.print(f"\n[bold red]APAGAR credenciais de:[/bold red]")
+        console.print("\n[bold red]APAGAR credenciais de:[/bold red]")
         console.print(f"  Provider: {servico.upper()}")
         console.print(f"  Conta: {conta or '(default)'}")
         console.print(f"  Email: {email}")
 
         if not confirmar:
             from rich.prompt import Confirm
+
             if not Confirm.ask("\n[red]Tem a certeza?[/red]", default=False):
                 console.print("[dim]Operação cancelada.[/dim]")
                 return
