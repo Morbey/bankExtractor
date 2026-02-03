@@ -60,6 +60,55 @@ DELETE_FILE = _DeleteMarker()
 IGNORE_FILE = _IgnoreMarker()
 
 
+# Pattern syntax help text (used in multiple places)
+PATTERN_HELP = """[dim]Sintaxe de padroes:[/dim]
+  [cyan]*[/cyan]  wildcard     [dim]ex: *@vodafone.pt, *fatura*[/dim]
+  [cyan]|[/cyan]  OU (or)      [dim]ex: fatura|invoice|factura[/dim]
+  [cyan]+[/cyan]  E (and)      [dim]ex: fatura+vodafone (ambos presentes)[/dim]
+  [dim]Combinar: *energia*+*edp* (contem energia E edp)[/dim]"""
+
+
+def _convert_pattern_to_regex(pattern: str) -> tuple[str, bool]:
+    """Convert user pattern to regex, handling *, |, and + operators.
+
+    Args:
+        pattern: User-provided pattern with *, |, + operators.
+
+    Returns:
+        Tuple of (regex_pattern, uses_special_chars).
+        For AND patterns (+), returns a lookahead-based regex.
+    """
+    has_special = "*" in pattern or "|" in pattern or "+" in pattern
+
+    if not has_special:
+        # Simple contains - escape for regex
+        return re.escape(pattern), False
+
+    # Handle AND patterns first (highest precedence)
+    if "+" in pattern:
+        # Split by + and create lookahead assertions for each part
+        parts = [p.strip() for p in pattern.split("+") if p.strip()]
+        lookaheads = []
+        for p in parts:
+            # Convert each part (may have wildcards)
+            escaped = p.replace(".", r"\.").replace("*", ".*")
+            lookaheads.append(f"(?=.*{escaped})")
+        # Combine lookaheads - all must match
+        return "".join(lookaheads) + ".*", True
+
+    # Handle OR patterns
+    if "|" in pattern:
+        parts = [p.strip() for p in pattern.split("|") if p.strip()]
+        regex_parts = []
+        for p in parts:
+            escaped = p.replace(".", r"\.").replace("*", ".*")
+            regex_parts.append(f"({escaped})")
+        return "|".join(regex_parts), True
+
+    # Just wildcards
+    return pattern.replace(".", r"\.").replace("*", ".*"), True
+
+
 @dataclass
 class UndoAction:
     """Represents an action that can be undone."""
@@ -417,12 +466,9 @@ class InvoiceProcessor:
         Returns:
             Tuple of (rule_condition, description).
         """
-        console.print(f"\n[bold]Padrão do remetente[/bold]")
+        console.print(f"\n[bold]Padrao do remetente[/bold]")
         console.print(f"Email atual: [cyan]{invoice.sender}[/cyan]")
-        console.print("\n[dim]Pode usar * como wildcard:[/dim]")
-        console.print("  • [cyan]*@vodafone.pt[/cyan] - qualquer email da vodafone")
-        console.print("  • [cyan]noreply@*[/cyan] - qualquer noreply")
-        console.print("  • [cyan]*newsletter*[/cyan] - qualquer email com 'newsletter'")
+        console.print(PATTERN_HELP)
 
         # Suggest domain-based pattern
         if "@" in invoice.sender:
@@ -436,27 +482,23 @@ class InvoiceProcessor:
         if not pattern:
             return None, ""
 
-        # Determine match type based on pattern
-        if "*" in pattern:
-            # Convert to regex-like pattern
-            match_type = MatchType.REGEX
-            # Convert wildcards to regex: * -> .*
-            regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+        # Convert pattern using helper function
+        regex_pattern, uses_special = _convert_pattern_to_regex(pattern)
+
+        if uses_special:
             condition = RuleCondition(
                 source=MatchSource.SENDER_EMAIL,
-                match_type=match_type,
+                match_type=MatchType.REGEX,
                 pattern=regex_pattern,
             )
-            description = f"Remetente: {pattern}"
         else:
             condition = RuleCondition(
                 source=MatchSource.SENDER_EMAIL,
                 match_type=MatchType.EXACT,
                 pattern=pattern,
             )
-            description = f"Remetente: {pattern}"
 
-        return condition, description
+        return condition, f"Remetente: {pattern}"
 
     def _prompt_text_pattern(
         self,
@@ -478,17 +520,11 @@ class InvoiceProcessor:
         Returns:
             Tuple of (rule_condition, description).
         """
-        console.print(f"\n[bold]Padrão no {field_name}[/bold]")
+        console.print(f"\n[bold]Padrao no {field_name}[/bold]")
         console.print(f"Valor atual: [cyan]{field_value[:100]}{'...' if len(field_value) > 100 else ''}[/cyan]")
 
-        console.print("\n[dim]Opções de visualização:[/dim]")
-        console.print("  • [cyan]v[/cyan] - Ver conteúdo completo")
-        console.print("  • [cyan]b[/cyan] - Ver body do email")
-        console.print("  • [cyan]p[/cyan] - Ver conteúdo do PDF")
-        console.print("  • [cyan]a[/cyan] - Abrir ficheiro PDF")
-        console.print("\n[dim]Pode usar * como wildcard e | para múltiplos padrões:[/dim]")
-        console.print("  • [cyan]*fatura*[/cyan] - contém 'fatura'")
-        console.print("  • [cyan]termo1|termo2|termo3[/cyan] - contém qualquer um")
+        console.print("\n[dim]Visualizacao: v=campo, b=body, p=PDF, a=abrir[/dim]")
+        console.print(PATTERN_HELP)
 
         while True:
             user_input = Prompt.ask(f"Padrão (ou v/b/p/a)", default=field_value[:30] if len(field_value) > 0 else "")
@@ -526,36 +562,23 @@ class InvoiceProcessor:
             pattern = user_input
             break
 
-        # Determine match type based on pattern
-        if "*" in pattern or "|" in pattern:
-            match_type = MatchType.REGEX
-            # Convert to regex
-            if "|" in pattern:
-                # Multiple patterns - already regex-like
-                parts = [p.strip() for p in pattern.split("|")]
-                # Convert wildcards in each part
-                regex_parts = []
-                for p in parts:
-                    rp = p.replace(".", r"\.").replace("*", ".*")
-                    regex_parts.append(f"({rp})")
-                regex_pattern = "|".join(regex_parts)
-            else:
-                regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+        # Convert pattern using helper function
+        regex_pattern, uses_special = _convert_pattern_to_regex(pattern)
 
+        if uses_special:
             condition = RuleCondition(
                 source=match_source,
-                match_type=match_type,
+                match_type=MatchType.REGEX,
                 pattern=regex_pattern,
             )
-            description = f"{field_name.capitalize()} contém: {pattern}"
         else:
             condition = RuleCondition(
                 source=match_source,
                 match_type=MatchType.CONTAINS,
                 pattern=pattern,
             )
-            description = f"{field_name.capitalize()} contém: {pattern}"
 
+        description = f"{field_name.capitalize()} contem: {pattern}"
         return condition, description
 
     def _prompt_pattern_with_viewing(
@@ -582,7 +605,7 @@ class InvoiceProcessor:
         Returns:
             RuleCondition or None if cancelled.
         """
-        console.print(f"\n[bold]Definir padrão para {field_name}[/bold]")
+        console.print(f"\n[bold]Definir padrao para {field_name}[/bold]")
 
         # Show current value preview
         preview = field_value[:100].replace("\n", " ")
@@ -590,17 +613,8 @@ class InvoiceProcessor:
             preview += "..."
         console.print(f"Valor actual: [cyan]{preview}[/cyan]")
 
-        console.print("\n[dim]Comandos de visualização:[/dim]")
-        console.print("  • [cyan]v[/cyan] - Ver conteúdo completo deste campo")
-        console.print("  • [cyan]e[/cyan] - Ver email (remetente, assunto)")
-        console.print("  • [cyan]b[/cyan] - Ver body do email")
-        console.print("  • [cyan]p[/cyan] - Ver conteúdo do PDF")
-        console.print("  • [cyan]a[/cyan] - Abrir ficheiro PDF")
-        console.print("  • [cyan]c[/cyan] - Cancelar (não usar este critério)")
-        console.print("\n[dim]Padrões suportados:[/dim]")
-        console.print("  • [cyan]*@empresa.pt[/cyan] - wildcard (qualquer coisa antes)")
-        console.print("  • [cyan]*fatura*[/cyan] - wildcard (contém 'fatura')")
-        console.print("  • [cyan]termo1|termo2|termo3[/cyan] - múltiplos padrões (OU)")
+        console.print("\n[dim]Visualizacao: v=campo, e=email, b=body, p=PDF, a=abrir, c=cancelar[/dim]")
+        console.print(PATTERN_HELP)
 
         while True:
             user_input = Prompt.ask(
@@ -662,26 +676,13 @@ class InvoiceProcessor:
             pattern = user_input
             break
 
-        # Determine match type based on pattern
-        if "*" in pattern or "|" in pattern:
-            match_type = MatchType.REGEX
-            # Convert to regex
-            if "|" in pattern:
-                # Multiple patterns - convert each part
-                parts = [p.strip() for p in pattern.split("|")]
-                regex_parts = []
-                for p in parts:
-                    # Escape dots, convert wildcards
-                    rp = p.replace(".", r"\.").replace("*", ".*")
-                    regex_parts.append(f"({rp})")
-                regex_pattern = "|".join(regex_parts)
-            else:
-                # Single pattern with wildcards
-                regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+        # Convert pattern using helper function
+        regex_pattern, uses_special = _convert_pattern_to_regex(pattern)
 
+        if uses_special:
             return RuleCondition(
                 source=match_source,
-                match_type=match_type,
+                match_type=MatchType.REGEX,
                 pattern=regex_pattern,
             )
         else:
@@ -1111,7 +1112,8 @@ class InvoiceProcessor:
         # Ask about creating classification rule
         console.print("\n[bold]Criar regra de classificação[/bold]")
         console.print("Que critérios usar para identificar automaticamente futuras faturas?")
-        console.print("[dim]Pode usar wildcards (*) e múltiplos padrões (|)[/dim]\n")
+        console.print(PATTERN_HELP)
+        console.print()
 
         rule_conditions = []
         option_num = 1
@@ -1317,7 +1319,8 @@ class InvoiceProcessor:
             email_body: Optional email body.
         """
         console.print(f"\n[bold]Criar regra para '{entity.name}'[/bold]")
-        console.print("[dim]Pode usar wildcards (*) e múltiplos padrões (|)[/dim]\n")
+        console.print(PATTERN_HELP)
+        console.print()
 
         rule_conditions = []
 

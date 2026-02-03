@@ -266,11 +266,12 @@ def pendentes(
         from src.modules.invoices.invoice_processor import InvoiceProcessor
 
         invoice = DownloadedInvoice(
-            file_path=file_path,
-            file_name=found.get("file_name", file_path.name),
+            provider=found.get("provider", "manual"),
             sender=found.get("sender", ""),
             subject=found.get("subject", ""),
             date=datetime.fromisoformat(found.get("email_date", datetime.now().isoformat())),
+            file_path=file_path,
+            file_name=found.get("file_name", file_path.name),
             file_size=file_path.stat().st_size if file_path.exists() else 0,
             email_body=found.get("email_body"),
         )
@@ -359,8 +360,44 @@ def pendentes(
         return
 
     if processar_todos:
-        processor = DocumentProcessor()
-        processor.process_pending_queue(interactive=True)
+        # Process files from _pendentes folder (not just the registry)
+        unprocessed_files = _get_unprocessed_files()
+
+        if not unprocessed_files:
+            console.print("[green]Nao ha ficheiros por processar na pasta _pendentes.[/green]")
+            return
+
+        console.print(f"[bold]A processar {len(unprocessed_files)} ficheiros...[/bold]\n")
+
+        # Use InvoiceProcessor to process each file interactively
+        from datetime import datetime
+        from src.modules.invoices.base import DownloadedInvoice
+        from src.modules.invoices.invoice_processor import InvoiceProcessor
+
+        processor = InvoiceProcessor()
+        processor.reset_session_stats()
+
+        processed = 0
+        for file_path in unprocessed_files:
+            # Create a minimal DownloadedInvoice for processing
+            invoice = DownloadedInvoice(
+                provider="manual",
+                sender="",
+                subject=file_path.stem,
+                date=datetime.fromtimestamp(file_path.stat().st_mtime),
+                file_path=file_path,
+                file_name=file_path.name,
+                file_size=file_path.stat().st_size,
+                email_body=None,
+            )
+
+            result, _, _ = processor.process_invoice(invoice, interactive=True, move=True)
+            if result.success:
+                processed += 1
+
+        # Show session summary
+        processor.show_session_summary()
+        console.print(f"\n[green]Processados {processed} de {len(unprocessed_files)} ficheiros.[/green]")
 
 
 def entidades(
