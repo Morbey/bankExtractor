@@ -45,6 +45,7 @@ class InvoiceDownloader:
         self,
         provider_id: str,
         email_filter: Optional[EmailFilter] = None,
+        account: Optional[str] = None,
     ) -> list[DownloadedInvoice]:
         """Download invoices from a specific email provider.
 
@@ -52,6 +53,7 @@ class InvoiceDownloader:
             provider_id: Email provider identifier (gmail, hotmail)
             email_filter: Optional filter criteria. If None, uses default filter
                          with common invoice senders.
+            account: Optional account name for multiple accounts (e.g., 'pessoal', 'empresa')
 
         Returns:
             List of downloaded invoices
@@ -69,9 +71,10 @@ class InvoiceDownloader:
                 senders=COMMON_INVOICE_SENDERS,
             )
 
-        self.logger.info(f"A iniciar download de faturas via {provider_id}...")
+        account_display = f"{provider_id} ({account})" if account else provider_id
+        self.logger.info(f"A iniciar download de faturas via {account_display}...")
 
-        with provider_class() as provider:
+        with provider_class(account=account) as provider:
             return provider.run(email_filter)
 
     def download_all(

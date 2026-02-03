@@ -48,8 +48,15 @@ class EmailProviderBase(ABC):
     IMAP_SERVER: str = ""
     IMAP_PORT: int = 993
 
-    def __init__(self):
-        self.logger = get_logger(f"invoices.{self.PROVIDER_ID}")
+    def __init__(self, account: Optional[str] = None):
+        """Initialize email provider.
+
+        Args:
+            account: Optional account name for multiple accounts (e.g., 'pessoal', 'empresa')
+        """
+        self.account = account
+        self._credential_key = f"{self.PROVIDER_ID}_{account}" if account else self.PROVIDER_ID
+        self.logger = get_logger(f"invoices.{self._credential_key}")
         self._connection = None
 
     def __enter__(self):
@@ -67,16 +74,18 @@ class EmailProviderBase(ABC):
         Returns:
             Tuple of (email, password/app_password)
         """
+        display_name = f"{self.PROVIDER_NAME} ({self.account})" if self.account else self.PROVIDER_NAME
+
         email = CredentialManager.get_or_prompt(
-            self.PROVIDER_ID,
+            self._credential_key,
             "email",
-            f"Email {self.PROVIDER_NAME}",
+            f"Email {display_name}",
             password=False,
         )
         password = CredentialManager.get_or_prompt(
-            self.PROVIDER_ID,
+            self._credential_key,
             "password",
-            f"Password/App Password {self.PROVIDER_NAME}",
+            f"Password/App Password {display_name}",
             password=True,
         )
         return email, password

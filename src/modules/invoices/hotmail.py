@@ -28,8 +28,8 @@ class HotmailProvider(EmailProviderBase):
     IMAP_SERVER = "outlook.office365.com"
     IMAP_PORT = 993
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, account: Optional[str] = None):
+        super().__init__(account=account)
         self._imap: Optional[imaplib.IMAP4_SSL] = None
 
     def connect(self) -> bool:

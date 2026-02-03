@@ -609,6 +609,11 @@ def faturas(
         "--fim", "-f",
         help="Data fim (DD-MM-YYYY). Default: hoje.",
     ),
+    conta: Optional[str] = typer.Option(
+        None,
+        "--conta",
+        help="Nome da conta (ex: pessoal, empresa). Permite múltiplas contas por provider.",
+    ),
     config_creds: bool = typer.Option(
         False,
         "--config", "-c",
@@ -624,7 +629,7 @@ def faturas(
 
     # Handle credential configuration
     if config_creds:
-        _configure_email_credentials(provider)
+        _configure_email_credentials(provider, conta)
         return
 
     # Determine which providers to use
@@ -647,19 +652,22 @@ def faturas(
     end_date = parse_date(fim) if fim else date.today()
 
     console.print(f"\n[cyan]Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}[/cyan]")
+    if conta:
+        console.print(f"[cyan]Conta: {conta}[/cyan]")
 
     # Create downloader and process
     downloader = InvoiceDownloader()
     all_invoices = []
 
     for prov_id in providers_to_process:
-        console.print(f"\n[bold cyan]Processando {prov_id.upper()}...[/bold cyan]")
+        display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
+        console.print(f"\n[bold cyan]Processando {display_name}...[/bold cyan]")
         try:
             email_filter = EmailFilter(
                 start_date=start_date,
                 end_date=end_date,
             )
-            invoices = downloader.download_from(prov_id, email_filter)
+            invoices = downloader.download_from(prov_id, email_filter, account=conta)
             all_invoices.extend(invoices)
         except Exception as e:
             console.print(f"[red]Erro: {e}[/red]")
@@ -690,8 +698,13 @@ def faturas(
         console.print("\n[yellow]Nenhuma fatura encontrada.[/yellow]")
 
 
-def _configure_email_credentials(provider: str) -> None:
-    """Configure email credentials for a provider."""
+def _configure_email_credentials(provider: str, account: Optional[str] = None) -> None:
+    """Configure email credentials for a provider.
+
+    Args:
+        provider: Provider name (gmail, hotmail, todos)
+        account: Optional account name (e.g., pessoal, empresa)
+    """
     if provider.lower() == "todos":
         providers = list(EMAIL_PROVIDERS.keys())
     elif provider.lower() in EMAIL_PROVIDERS:
@@ -701,7 +714,11 @@ def _configure_email_credentials(provider: str) -> None:
         raise typer.Exit(1)
 
     for prov_id in providers:
-        console.print(f"\n[bold cyan]Configurar credenciais {prov_id.upper()}[/bold cyan]")
+        # Build credential key with account name if provided
+        credential_key = f"{prov_id}_{account}" if account else prov_id
+        display_name = f"{prov_id.upper()} ({account})" if account else prov_id.upper()
+
+        console.print(f"\n[bold cyan]Configurar credenciais {display_name}[/bold cyan]")
 
         if prov_id == "gmail":
             console.print(
@@ -713,32 +730,41 @@ def _configure_email_credentials(provider: str) -> None:
 
         # Prompt for credentials
         email_addr = CredentialManager.get_or_prompt(
-            prov_id,
+            credential_key,
             "email",
-            f"Email {prov_id}",
+            f"Email {display_name}",
             password=False,
         )
         CredentialManager.get_or_prompt(
-            prov_id,
+            credential_key,
             "password",
-            f"Password/App Password {prov_id}",
+            f"Password/App Password {display_name}",
             password=True,
         )
-        console.print(f"[green]Credenciais configuradas para {email_addr}[/green]")
+        console.print(f"[green]Credenciais configuradas para {display_name}[/green]")
 
 
 @app.command()
 def faturas_limpar(
     provider: str = typer.Argument(..., help="Provider de email: gmail, hotmail"),
+    conta: Optional[str] = typer.Option(
+        None,
+        "--conta",
+        help="Nome da conta a limpar (ex: pessoal, empresa)",
+    ),
 ):
     """Limpar credenciais de email guardadas."""
     if provider.lower() not in EMAIL_PROVIDERS:
         console.print(f"[red]Provider desconhecido: {provider}[/red]")
         raise typer.Exit(1)
 
-    CredentialManager.delete_credential(provider.lower(), "email")
-    CredentialManager.delete_credential(provider.lower(), "password")
-    console.print(f"[green]Credenciais do {provider} removidas.[/green]")
+    # Build credential key with account name if provided
+    credential_key = f"{provider.lower()}_{conta}" if conta else provider.lower()
+    display_name = f"{provider} ({conta})" if conta else provider
+
+    CredentialManager.delete_credential(credential_key, "email")
+    CredentialManager.delete_credential(credential_key, "password")
+    console.print(f"[green]Credenciais de {display_name} removidas.[/green]")
 
 
 @app.command()
