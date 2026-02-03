@@ -9,7 +9,7 @@ This module handles:
 
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from src.core.categories import DELETE_REASONS, IGNORE_REASONS
 from src.core.config import settings
 from src.core.classification_rules import (
     ClassificationRule,
@@ -60,6 +61,50 @@ IGNORE_FILE = _IgnoreMarker()
 
 
 @dataclass
+class UndoAction:
+    """Represents an action that can be undone."""
+
+    file_path: Path  # Original file path
+    action_type: str  # "organize", "ignore", "delete"
+    destination: Optional[Path] = None  # Where file was moved (for organize)
+    rule_id: Optional[str] = None  # Rule created (if any)
+    pending_id: Optional[str] = None  # Pending document ID (for ignore)
+    entity_id: Optional[str] = None  # Entity associated
+    document_id: Optional[str] = None  # Document record ID (for organize)
+
+
+class UndoStack:
+    """Stack of undoable actions for the current session."""
+
+    def __init__(self):
+        self._actions: list[UndoAction] = []
+
+    def push(self, action: UndoAction) -> None:
+        """Add an action to the stack."""
+        self._actions.append(action)
+
+    def pop(self) -> Optional[UndoAction]:
+        """Remove and return the last action."""
+        if self._actions:
+            return self._actions.pop()
+        return None
+
+    def peek(self) -> Optional[UndoAction]:
+        """Return the last action without removing it."""
+        if self._actions:
+            return self._actions[-1]
+        return None
+
+    def can_undo(self) -> bool:
+        """Check if there are actions to undo."""
+        return len(self._actions) > 0
+
+    def clear(self) -> None:
+        """Clear all actions."""
+        self._actions.clear()
+
+
+@dataclass
 class ProcessedInvoice:
     """Result of processing an invoice."""
 
@@ -90,8 +135,8 @@ class InvoiceProcessor:
         re.compile(r"(\d{2}-\d{2}-\d{4})"),
     ]
 
-    # Ignore reason options
-    IGNORE_REASONS = {
+    # Rule creation options (for ignore/delete)
+    RULE_OPTIONS = {
         "1": ("sender", "Este remetente (todos os emails deste endereço)"),
         "2": ("subject_pattern", "Padrão no assunto"),
         "3": ("filename_pattern", "Padrão no nome do ficheiro"),
@@ -103,6 +148,7 @@ class InvoiceProcessor:
         self.registry = get_document_registry()
         self.rules_engine = get_rules_engine()
         self._pdf_parser = None
+        self._undo_stack = UndoStack()
         # Session statistics (for summary at the end)
         self._session_stats = {
             "organized": [],      # List of (filename, entity_name, dest_path)
@@ -286,64 +332,364 @@ class InvoiceProcessor:
     def _prompt_ignore_reason(
         self,
         invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str],
         action: str,  # "ignore" or "delete"
-    ) -> tuple[Optional[RuleCondition], str]:
+    ) -> tuple[Optional[RuleCondition], str, str]:
         """Prompt user to select reason for ignoring/deleting.
 
         Args:
             invoice: Invoice being ignored/deleted.
+            pdf_info: Extracted PDF information.
+            email_body: Optional email body content.
             action: "ignore" or "delete".
 
         Returns:
-            Tuple of (rule_condition, reason_description).
+            Tuple of (rule_condition, reason_code, reason_label).
         """
         action_name = "ignorar" if action == "ignore" else "eliminar"
-        console.print(f"\n[bold]Porque quer {action_name} este documento?[/bold]")
-        console.print("[dim]Esta escolha será aplicada automaticamente a documentos similares.[/dim]\n")
+        reasons = IGNORE_REASONS if action == "ignore" else DELETE_REASONS
 
-        for key, (_, desc) in self.IGNORE_REASONS.items():
-            console.print(f"  {key}. {desc}")
+        # Step 1: Ask for reason
+        console.print(f"\n[bold]Razão para {action_name}:[/bold]")
+        reason_keys = list(reasons.keys())
+        for i, (key, label) in enumerate(reasons.items(), 1):
+            console.print(f"  {i}. {label}")
+        console.print("  0. ← Cancelar (voltar ao menu)")
 
-        choice = Prompt.ask("Razão", choices=list(self.IGNORE_REASONS.keys()), default="1")
-        reason_type, reason_desc = self.IGNORE_REASONS[choice]
+        choices = ["0"] + [str(i) for i in range(1, len(reason_keys) + 1)]
+        choice = Prompt.ask("Escolha", choices=choices, default="1")
+
+        if choice == "0":
+            return None, "", ""
+
+        reason_idx = int(choice) - 1
+        reason_code = reason_keys[reason_idx]
+        reason_label = reasons[reason_code]
+
+        # Step 2: Ask if user wants to create a rule for auto-apply
+        console.print(f"\n[bold]Criar regra para {action_name} automaticamente documentos similares?[/bold]")
+        console.print("  1. Sim, por remetente (todos deste email)")
+        console.print("  2. Sim, por padrão no assunto")
+        console.print("  3. Sim, por padrão no nome do ficheiro")
+        console.print("  4. Não, apenas este documento")
+
+        rule_choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4"], default="4")
 
         condition = None
-        description = ""
+        description = reason_label
 
-        if reason_type == "sender":
+        if rule_choice == "1":
+            # By sender - with wildcard support
+            condition, description = self._prompt_sender_pattern(invoice)
+
+        elif rule_choice == "2":
+            # By subject pattern - with interactive viewing
+            condition, description = self._prompt_text_pattern(
+                "assunto",
+                invoice.subject,
+                MatchSource.SUBJECT,
+                pdf_info,
+                email_body,
+            )
+
+        elif rule_choice == "3":
+            # By filename pattern
+            condition, description = self._prompt_text_pattern(
+                "nome do ficheiro",
+                invoice.file_name,
+                MatchSource.FILENAME,
+                pdf_info,
+                email_body,
+            )
+
+        return condition, reason_code, reason_label
+
+    def _prompt_sender_pattern(
+        self,
+        invoice: DownloadedInvoice,
+    ) -> tuple[Optional[RuleCondition], str]:
+        """Prompt for sender email pattern with wildcard support.
+
+        Args:
+            invoice: Downloaded invoice.
+
+        Returns:
+            Tuple of (rule_condition, description).
+        """
+        console.print(f"\n[bold]Padrão do remetente[/bold]")
+        console.print(f"Email atual: [cyan]{invoice.sender}[/cyan]")
+        console.print("\n[dim]Pode usar * como wildcard:[/dim]")
+        console.print("  • [cyan]*@vodafone.pt[/cyan] - qualquer email da vodafone")
+        console.print("  • [cyan]noreply@*[/cyan] - qualquer noreply")
+        console.print("  • [cyan]*newsletter*[/cyan] - qualquer email com 'newsletter'")
+
+        # Suggest domain-based pattern
+        if "@" in invoice.sender:
+            domain = invoice.sender.split("@")[1]
+            default_pattern = f"*@{domain}"
+        else:
+            default_pattern = invoice.sender
+
+        pattern = Prompt.ask("Padrão", default=default_pattern)
+
+        if not pattern:
+            return None, ""
+
+        # Determine match type based on pattern
+        if "*" in pattern:
+            # Convert to regex-like pattern
+            match_type = MatchType.REGEX
+            # Convert wildcards to regex: * -> .*
+            regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+            condition = RuleCondition(
+                source=MatchSource.SENDER_EMAIL,
+                match_type=match_type,
+                pattern=regex_pattern,
+            )
+            description = f"Remetente: {pattern}"
+        else:
             condition = RuleCondition(
                 source=MatchSource.SENDER_EMAIL,
                 match_type=MatchType.EXACT,
-                pattern=invoice.sender,
+                pattern=pattern,
             )
-            description = f"Email: {invoice.sender}"
-
-        elif reason_type == "subject_pattern":
-            console.print(f"\nAssunto atual: [cyan]{invoice.subject}[/cyan]")
-            pattern = Prompt.ask("Padrão a procurar no assunto", default=invoice.subject[:30])
-            if pattern:
-                condition = RuleCondition(
-                    source=MatchSource.SUBJECT,
-                    match_type=MatchType.CONTAINS,
-                    pattern=pattern,
-                )
-                description = f"Assunto contém: {pattern}"
-
-        elif reason_type == "filename_pattern":
-            console.print(f"\nFicheiro: [cyan]{invoice.file_name}[/cyan]")
-            pattern = Prompt.ask("Padrão a procurar no nome", default=invoice.file_name.split(".")[0][:20])
-            if pattern:
-                condition = RuleCondition(
-                    source=MatchSource.FILENAME,
-                    match_type=MatchType.CONTAINS,
-                    pattern=pattern,
-                )
-                description = f"Nome contém: {pattern}"
-
-        elif reason_type == "this_only":
-            description = "Documento individual"
+            description = f"Remetente: {pattern}"
 
         return condition, description
+
+    def _prompt_text_pattern(
+        self,
+        field_name: str,
+        field_value: str,
+        match_source: MatchSource,
+        pdf_info: dict,
+        email_body: Optional[str],
+    ) -> tuple[Optional[RuleCondition], str]:
+        """Prompt for text pattern with viewing and composite support.
+
+        Args:
+            field_name: Name of the field (for display).
+            field_value: Current value of the field.
+            match_source: Source to match against.
+            pdf_info: Extracted PDF information.
+            email_body: Optional email body.
+
+        Returns:
+            Tuple of (rule_condition, description).
+        """
+        console.print(f"\n[bold]Padrão no {field_name}[/bold]")
+        console.print(f"Valor atual: [cyan]{field_value[:100]}{'...' if len(field_value) > 100 else ''}[/cyan]")
+
+        console.print("\n[dim]Opções de visualização:[/dim]")
+        console.print("  • [cyan]v[/cyan] - Ver conteúdo completo")
+        console.print("  • [cyan]b[/cyan] - Ver body do email")
+        console.print("  • [cyan]p[/cyan] - Ver conteúdo do PDF")
+        console.print("  • [cyan]a[/cyan] - Abrir ficheiro PDF")
+        console.print("\n[dim]Pode usar * como wildcard e | para múltiplos padrões:[/dim]")
+        console.print("  • [cyan]*fatura*[/cyan] - contém 'fatura'")
+        console.print("  • [cyan]termo1|termo2|termo3[/cyan] - contém qualquer um")
+
+        while True:
+            user_input = Prompt.ask(f"Padrão (ou v/b/p/a)", default=field_value[:30] if len(field_value) > 0 else "")
+
+            if user_input.lower() == "v":
+                console.print(f"\n[bold]{field_name.capitalize()} completo:[/bold]")
+                console.print(Panel(field_value, border_style="cyan"))
+                continue
+
+            if user_input.lower() == "b":
+                if email_body:
+                    console.print("\n[bold]Body do email:[/bold]")
+                    console.print(Panel(email_body[:2000], border_style="blue"))
+                else:
+                    console.print("[dim]Body do email não disponível[/dim]")
+                continue
+
+            if user_input.lower() == "p":
+                raw_text = pdf_info.get("raw_text", "")
+                if raw_text:
+                    console.print("\n[bold]Conteúdo do PDF:[/bold]")
+                    console.print(Panel(raw_text[:2000], border_style="green"))
+                else:
+                    console.print("[dim]Conteúdo do PDF não disponível[/dim]")
+                continue
+
+            if user_input.lower() == "a":
+                self._open_file(Path(pdf_info.get("file_path", ""))) if pdf_info.get("file_path") else None
+                continue
+
+            # It's a pattern
+            if not user_input:
+                return None, ""
+
+            pattern = user_input
+            break
+
+        # Determine match type based on pattern
+        if "*" in pattern or "|" in pattern:
+            match_type = MatchType.REGEX
+            # Convert to regex
+            if "|" in pattern:
+                # Multiple patterns - already regex-like
+                parts = [p.strip() for p in pattern.split("|")]
+                # Convert wildcards in each part
+                regex_parts = []
+                for p in parts:
+                    rp = p.replace(".", r"\.").replace("*", ".*")
+                    regex_parts.append(f"({rp})")
+                regex_pattern = "|".join(regex_parts)
+            else:
+                regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+
+            condition = RuleCondition(
+                source=match_source,
+                match_type=match_type,
+                pattern=regex_pattern,
+            )
+            description = f"{field_name.capitalize()} contém: {pattern}"
+        else:
+            condition = RuleCondition(
+                source=match_source,
+                match_type=MatchType.CONTAINS,
+                pattern=pattern,
+            )
+            description = f"{field_name.capitalize()} contém: {pattern}"
+
+        return condition, description
+
+    def _prompt_pattern_with_viewing(
+        self,
+        field_name: str,
+        field_value: str,
+        match_source: MatchSource,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str],
+        default_pattern: str = "",
+    ) -> Optional[RuleCondition]:
+        """Prompt for a pattern with interactive viewing and wildcard/composite support.
+
+        Args:
+            field_name: Name of the field being configured.
+            field_value: Current value of the field.
+            match_source: Source for the rule condition.
+            invoice: Current invoice.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body.
+            default_pattern: Default pattern suggestion.
+
+        Returns:
+            RuleCondition or None if cancelled.
+        """
+        console.print(f"\n[bold]Definir padrão para {field_name}[/bold]")
+
+        # Show current value preview
+        preview = field_value[:100].replace("\n", " ")
+        if len(field_value) > 100:
+            preview += "..."
+        console.print(f"Valor actual: [cyan]{preview}[/cyan]")
+
+        console.print("\n[dim]Comandos de visualização:[/dim]")
+        console.print("  • [cyan]v[/cyan] - Ver conteúdo completo deste campo")
+        console.print("  • [cyan]e[/cyan] - Ver email (remetente, assunto)")
+        console.print("  • [cyan]b[/cyan] - Ver body do email")
+        console.print("  • [cyan]p[/cyan] - Ver conteúdo do PDF")
+        console.print("  • [cyan]a[/cyan] - Abrir ficheiro PDF")
+        console.print("  • [cyan]c[/cyan] - Cancelar (não usar este critério)")
+        console.print("\n[dim]Padrões suportados:[/dim]")
+        console.print("  • [cyan]*@empresa.pt[/cyan] - wildcard (qualquer coisa antes)")
+        console.print("  • [cyan]*fatura*[/cyan] - wildcard (contém 'fatura')")
+        console.print("  • [cyan]termo1|termo2|termo3[/cyan] - múltiplos padrões (OU)")
+
+        while True:
+            user_input = Prompt.ask(
+                f"Padrão (ou v/e/b/p/a/c)",
+                default=default_pattern if default_pattern else ""
+            )
+
+            cmd = user_input.lower().strip()
+
+            if cmd == "v":
+                console.print(f"\n[bold]{field_name} completo:[/bold]")
+                console.print(Panel(field_value[:3000], border_style="cyan"))
+                if len(field_value) > 3000:
+                    console.print(f"[dim]... ({len(field_value) - 3000} caracteres omitidos)[/dim]")
+                continue
+
+            if cmd == "e":
+                console.print(f"\n[bold]Informação do Email:[/bold]")
+                console.print(f"  Remetente: [cyan]{invoice.sender}[/cyan]")
+                console.print(f"  Assunto: [cyan]{invoice.subject}[/cyan]")
+                console.print(f"  Data: [cyan]{invoice.date.strftime('%d/%m/%Y %H:%M')}[/cyan]")
+                continue
+
+            if cmd == "b":
+                if email_body:
+                    console.print("\n[bold]Body do email:[/bold]")
+                    console.print(Panel(email_body[:3000], border_style="blue"))
+                    if len(email_body) > 3000:
+                        console.print(f"[dim]... ({len(email_body) - 3000} caracteres omitidos)[/dim]")
+                else:
+                    console.print("[dim]Body do email não disponível[/dim]")
+                continue
+
+            if cmd == "p":
+                raw_text = pdf_info.get("raw_text", "")
+                if raw_text:
+                    console.print("\n[bold]Conteúdo do PDF:[/bold]")
+                    console.print(Panel(raw_text[:3000], border_style="green"))
+                    if len(raw_text) > 3000:
+                        console.print(f"[dim]... ({len(raw_text) - 3000} caracteres omitidos)[/dim]")
+                else:
+                    console.print("[dim]Conteúdo do PDF não disponível[/dim]")
+                continue
+
+            if cmd == "a":
+                if invoice.file_path.exists():
+                    self._open_file(invoice.file_path)
+                else:
+                    console.print("[dim]Ficheiro não disponível[/dim]")
+                continue
+
+            if cmd == "c":
+                return None
+
+            # It's a pattern - process it
+            if not user_input:
+                return None
+
+            pattern = user_input
+            break
+
+        # Determine match type based on pattern
+        if "*" in pattern or "|" in pattern:
+            match_type = MatchType.REGEX
+            # Convert to regex
+            if "|" in pattern:
+                # Multiple patterns - convert each part
+                parts = [p.strip() for p in pattern.split("|")]
+                regex_parts = []
+                for p in parts:
+                    # Escape dots, convert wildcards
+                    rp = p.replace(".", r"\.").replace("*", ".*")
+                    regex_parts.append(f"({rp})")
+                regex_pattern = "|".join(regex_parts)
+            else:
+                # Single pattern with wildcards
+                regex_pattern = pattern.replace(".", r"\.").replace("*", ".*")
+
+            return RuleCondition(
+                source=match_source,
+                match_type=match_type,
+                pattern=regex_pattern,
+            )
+        else:
+            return RuleCondition(
+                source=match_source,
+                match_type=MatchType.CONTAINS,
+                pattern=pattern,
+            )
 
     def _create_ignore_rule(
         self,
@@ -454,7 +800,7 @@ class InvoiceProcessor:
         pdf_info: dict,
         email_body: Optional[str] = None,
         create_rules: bool = True,
-    ) -> tuple[Optional[Entity], Optional[RuleCondition], Optional[str]]:
+    ) -> tuple[Optional[Entity], Optional[RuleCondition], Optional[str], Optional[str], Optional[str]]:
         """Prompt user to create or select an entity.
 
         Args:
@@ -464,10 +810,12 @@ class InvoiceProcessor:
             create_rules: If True, ask for rule creation on ignore/delete.
 
         Returns:
-            Tuple of (entity_or_marker, rule_condition, action).
-            - entity_or_marker: Entity, DELETE_FILE, IGNORE_FILE, or None
+            Tuple of (entity_or_marker, rule_condition, action, reason_code, reason_label).
+            - entity_or_marker: Entity, DELETE_FILE, IGNORE_FILE, None, or "undo"
             - rule_condition: Condition for auto-applying to similar docs (or None)
             - action: "delete", "ignore", or None
+            - reason_code: Code for ignore/delete reason (or None)
+            - reason_label: Human-readable reason label (or None)
         """
         while True:
             console.print("\n[yellow]Entidade desconhecida![/yellow]")
@@ -478,14 +826,27 @@ class InvoiceProcessor:
             console.print("  4. Ignorar (deixar pendente)")
             console.print("  5. [red]Eliminar ficheiro[/red]")
 
-            choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4", "5"], default="1")
+            choices = ["1", "2", "3", "4", "5"]
+
+            # Show undo option if there are actions to undo
+            if self._undo_stack.can_undo():
+                last_action = self._undo_stack.peek()
+                action_desc = {
+                    "organize": "organização",
+                    "ignore": "ignorar",
+                    "delete": "eliminação",
+                }.get(last_action.action_type, last_action.action_type)
+                console.print(f"  6. [cyan]← Voltar atrás (desfazer {action_desc})[/cyan]")
+                choices.append("6")
+
+            choice = Prompt.ask("Escolha", choices=choices, default="1")
 
             if choice == "1":
-                return self._create_entity_with_rule(invoice, pdf_info, email_body), None, None
+                return self._create_entity_with_rule(invoice, pdf_info, email_body), None, None, None, None
             elif choice == "2":
                 entity = self._select_existing_entity(invoice, pdf_info, email_body)
                 if entity:
-                    return entity, None, None
+                    return entity, None, None, None, None
                 # If cancelled, show menu again
             elif choice == "3":
                 self._show_extended_info(invoice, pdf_info, email_body)
@@ -493,20 +854,146 @@ class InvoiceProcessor:
             elif choice == "4":
                 # Ask for reason and create ignore rule
                 if create_rules:
-                    condition, description = self._prompt_ignore_reason(invoice, "ignore")
-                    return IGNORE_FILE, condition, "ignore"
-                return IGNORE_FILE, None, "ignore"
+                    condition, reason_code, reason_label = self._prompt_ignore_reason(
+                        invoice, pdf_info, email_body, "ignore"
+                    )
+                    if reason_code == "":
+                        # User cancelled
+                        continue
+                    return IGNORE_FILE, condition, "ignore", reason_code, reason_label
+                return IGNORE_FILE, None, "ignore", None, None
             elif choice == "5":
-                # Confirm deletion and ask for reason
-                if Confirm.ask(
-                    f"[red]Tem a certeza que quer eliminar '{invoice.file_name}'?[/red]",
-                    default=False,
-                ):
-                    if create_rules:
-                        condition, description = self._prompt_ignore_reason(invoice, "delete")
-                        return DELETE_FILE, condition, "delete"
-                    return DELETE_FILE, None, "delete"
+                # Show warning and ask for reason
+                console.print("\n[red bold]⚠ ATENÇÃO: Esta ação é permanente![/red bold]")
+                if create_rules:
+                    condition, reason_code, reason_label = self._prompt_ignore_reason(
+                        invoice, pdf_info, email_body, "delete"
+                    )
+                    if reason_code == "":
+                        # User cancelled
+                        continue
+                    # Final confirmation
+                    if Confirm.ask(
+                        f"[red]Tem a certeza que quer eliminar '{invoice.file_name}'?[/red]",
+                        default=False,
+                    ):
+                        return DELETE_FILE, condition, "delete", reason_code, reason_label
+                    continue
+                else:
+                    if Confirm.ask(
+                        f"[red]Tem a certeza que quer eliminar '{invoice.file_name}'?[/red]",
+                        default=False,
+                    ):
+                        return DELETE_FILE, None, "delete", None, None
                 # If not confirmed, show menu again
+            elif choice == "6":
+                # Handle undo
+                if self._handle_undo():
+                    return "undo", None, None, None, None
+                # If undo failed or cancelled, show menu again
+
+    def _handle_undo(self) -> bool:
+        """Handle undo of the last action.
+
+        Returns:
+            True if undo was successful, False otherwise.
+        """
+        if not self._undo_stack.can_undo():
+            console.print("[yellow]Não há ações para desfazer[/yellow]")
+            return False
+
+        action = self._undo_stack.peek()
+
+        if action.action_type == "delete":
+            console.print("[red]Não é possível recuperar ficheiros eliminados[/red]")
+            return False
+
+        # Show what will be undone
+        console.print(f"\n[bold]Desfazer última ação:[/bold]")
+        if action.action_type == "organize":
+            console.print(f"  Tipo: Organização")
+            console.print(f"  Ficheiro: [cyan]{action.file_path.name}[/cyan]")
+            console.print(f"  Destino: [cyan]{action.destination}[/cyan]")
+            console.print(f"  [dim]O ficheiro será movido de volta para _pendentes/[/dim]")
+        elif action.action_type == "ignore":
+            console.print(f"  Tipo: Ignorar")
+            console.print(f"  Ficheiro: [cyan]{action.file_path.name}[/cyan]")
+            console.print(f"  [dim]O ficheiro será removido dos pendentes[/dim]")
+
+        if action.rule_id:
+            console.print(f"  [dim]Regra criada será eliminada[/dim]")
+
+        if not Confirm.ask("Confirma desfazer?", default=True):
+            return False
+
+        # Execute undo
+        success = self._execute_undo(action)
+
+        if success:
+            self._undo_stack.pop()
+            console.print("[green]Ação desfeita com sucesso![/green]")
+            return True
+        else:
+            console.print("[red]Erro ao desfazer ação[/red]")
+            return False
+
+    def _execute_undo(self, action: UndoAction) -> bool:
+        """Execute the undo of an action.
+
+        Args:
+            action: The action to undo.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            if action.action_type == "organize":
+                # Move file back from destination to pending folder
+                if action.destination and action.destination.exists():
+                    pending_dir = settings.faturas_temp_dir
+                    pending_dir.mkdir(parents=True, exist_ok=True)
+                    dest_path = pending_dir / action.file_path.name
+                    shutil.move(str(action.destination), str(dest_path))
+
+                # Remove document record
+                if action.document_id:
+                    # Note: DocumentRegistry doesn't have delete_document, so we skip this
+                    pass
+
+                # Delete rule if created
+                if action.rule_id:
+                    self.rules_engine.delete_rule(action.rule_id)
+
+                # Update session stats
+                self._session_stats["organized"] = [
+                    s for s in self._session_stats["organized"]
+                    if s[0] != action.file_path.name
+                ]
+
+                return True
+
+            elif action.action_type == "ignore":
+                # Remove from pending queue
+                if action.pending_id:
+                    self.registry.remove_from_pending(action.pending_id)
+
+                # Delete rule if created
+                if action.rule_id:
+                    self.rules_engine.delete_rule(action.rule_id)
+
+                # Update session stats
+                self._session_stats["ignored"] = [
+                    s for s in self._session_stats["ignored"]
+                    if s[0] != action.file_path.name
+                ]
+
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error executing undo: {e}")
+            return False
 
     def _show_extended_info(
         self,
@@ -624,80 +1111,102 @@ class InvoiceProcessor:
         # Ask about creating classification rule
         console.print("\n[bold]Criar regra de classificação[/bold]")
         console.print("Que critérios usar para identificar automaticamente futuras faturas?")
+        console.print("[dim]Pode usar wildcards (*) e múltiplos padrões (|)[/dim]\n")
 
         rule_conditions = []
         option_num = 1
 
-        # Option 1: Sender email (always suggested)
-        console.print(f"\n{option_num}. Email remetente: [cyan]{invoice.sender}[/cyan]")
+        # Option 1: Sender email (with wildcard support)
+        console.print(f"{option_num}. Email remetente: [cyan]{invoice.sender}[/cyan]")
         if Confirm.ask("   Usar email do remetente?", default=True):
-            rule_conditions.append(RuleCondition(
-                source=MatchSource.SENDER_EMAIL,
-                match_type=MatchType.EXACT,
-                pattern=invoice.sender,
-            ))
+            # Offer wildcard option for sender
+            console.print("   [dim]Pode usar padrões: *@empresa.pt, *noreply*, etc.[/dim]")
+            if "@" in invoice.sender:
+                domain = invoice.sender.split("@")[1]
+                default_sender = f"*@{domain}"
+            else:
+                default_sender = invoice.sender
+
+            sender_pattern = Prompt.ask("   Padrão do remetente", default=default_sender)
+            if sender_pattern:
+                if "*" in sender_pattern:
+                    # Convert to regex
+                    regex_pattern = sender_pattern.replace(".", r"\.").replace("*", ".*")
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.SENDER_EMAIL,
+                        match_type=MatchType.REGEX,
+                        pattern=regex_pattern,
+                    ))
+                else:
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.SENDER_EMAIL,
+                        match_type=MatchType.EXACT,
+                        pattern=sender_pattern,
+                    ))
         option_num += 1
 
-        # Option 2: Subject pattern
-        console.print(f"\n{option_num}. Assunto: [cyan]{invoice.subject}[/cyan]")
+        # Option 2: Subject pattern (with enhanced input)
+        console.print(f"\n{option_num}. Assunto: [cyan]{invoice.subject[:60]}{'...' if len(invoice.subject) > 60 else ''}[/cyan]")
         if Confirm.ask("   Usar padrão no assunto?", default=False):
-            subject_pattern = Prompt.ask("   Padrão a procurar no assunto", default=invoice.subject[:30])
-            if subject_pattern:
-                rule_conditions.append(RuleCondition(
-                    source=MatchSource.SUBJECT,
-                    match_type=MatchType.CONTAINS,
-                    pattern=subject_pattern,
-                ))
+            condition = self._prompt_pattern_with_viewing(
+                "assunto",
+                invoice.subject,
+                MatchSource.SUBJECT,
+                invoice,
+                pdf_info,
+                email_body,
+                default_pattern=invoice.subject[:30],
+            )
+            if condition:
+                rule_conditions.append(condition)
         option_num += 1
 
-        # Option 3: Body pattern (always show, with preview if available)
+        # Option 3: Body pattern (with enhanced input)
         body_preview = ""
         if email_body:
-            body_preview = email_body[:100].replace("\n", " ")
-            if len(email_body) > 100:
+            body_preview = email_body[:80].replace("\n", " ")
+            if len(email_body) > 80:
                 body_preview += "..."
             console.print(f"\n{option_num}. Body do email: [cyan]{body_preview}[/cyan]")
         else:
             console.print(f"\n{option_num}. Body do email: [dim](não disponível)[/dim]")
 
-        if Confirm.ask("   Usar padrão no body do email?", default=False):
-            if email_body:
-                # Show more of the body to help user identify a pattern
-                console.print(f"   [dim]Primeiros 500 chars:[/dim]")
-                console.print(f"   {email_body[:500]}")
-            body_pattern = Prompt.ask("   Padrão a procurar no body")
-            if body_pattern:
-                rule_conditions.append(RuleCondition(
-                    source=MatchSource.BODY,
-                    match_type=MatchType.CONTAINS,
-                    pattern=body_pattern,
-                ))
+        if email_body and Confirm.ask("   Usar padrão no body do email?", default=False):
+            condition = self._prompt_pattern_with_viewing(
+                "body do email",
+                email_body,
+                MatchSource.BODY,
+                invoice,
+                pdf_info,
+                email_body,
+            )
+            if condition:
+                rule_conditions.append(condition)
         option_num += 1
 
-        # Option 4: PDF content pattern (always show, with preview)
+        # Option 4: PDF content pattern (with enhanced input)
         raw_text = pdf_info.get("raw_text", "")
         vendor = pdf_info.get("vendor")
         if raw_text:
-            pdf_preview = raw_text[:100].replace("\n", " ")
-            if len(raw_text) > 100:
+            pdf_preview = raw_text[:80].replace("\n", " ")
+            if len(raw_text) > 80:
                 pdf_preview += "..."
             console.print(f"\n{option_num}. Conteúdo do PDF: [cyan]{pdf_preview}[/cyan]")
         else:
             console.print(f"\n{option_num}. Conteúdo do PDF: [dim](não disponível)[/dim]")
 
-        if Confirm.ask("   Usar padrão no conteúdo do PDF?", default=False):
-            if raw_text:
-                # Show more of the PDF to help user identify a pattern
-                console.print(f"   [dim]Primeiros 500 chars:[/dim]")
-                console.print(f"   {raw_text[:500]}")
-            default_pdf_pattern = vendor if vendor else ""
-            pdf_pattern = Prompt.ask("   Padrão a procurar no PDF", default=default_pdf_pattern)
-            if pdf_pattern:
-                rule_conditions.append(RuleCondition(
-                    source=MatchSource.PDF_CONTENT,
-                    match_type=MatchType.CONTAINS,
-                    pattern=pdf_pattern,
-                ))
+        if raw_text and Confirm.ask("   Usar padrão no conteúdo do PDF?", default=False):
+            condition = self._prompt_pattern_with_viewing(
+                "conteúdo do PDF",
+                raw_text,
+                MatchSource.PDF_CONTENT,
+                invoice,
+                pdf_info,
+                email_body,
+                default_pattern=vendor if vendor else "",
+            )
+            if condition:
+                rule_conditions.append(condition)
         option_num += 1
 
         # Option 5: NIF from PDF (if found)
@@ -808,17 +1317,35 @@ class InvoiceProcessor:
             email_body: Optional email body.
         """
         console.print(f"\n[bold]Criar regra para '{entity.name}'[/bold]")
+        console.print("[dim]Pode usar wildcards (*) e múltiplos padrões (|)[/dim]\n")
 
         rule_conditions = []
 
-        # Offer various conditions
-        console.print(f"\n1. Email: [cyan]{invoice.sender}[/cyan]")
+        # Option 1: Email with wildcard support
+        console.print(f"1. Email: [cyan]{invoice.sender}[/cyan]")
         if Confirm.ask("   Incluir?", default=True):
-            rule_conditions.append(RuleCondition(
-                source=MatchSource.SENDER_EMAIL,
-                match_type=MatchType.EXACT,
-                pattern=invoice.sender,
-            ))
+            console.print("   [dim]Pode usar padrões: *@empresa.pt, *noreply*, etc.[/dim]")
+            if "@" in invoice.sender:
+                domain = invoice.sender.split("@")[1]
+                default_sender = f"*@{domain}"
+            else:
+                default_sender = invoice.sender
+
+            sender_pattern = Prompt.ask("   Padrão do remetente", default=default_sender)
+            if sender_pattern:
+                if "*" in sender_pattern:
+                    regex_pattern = sender_pattern.replace(".", r"\.").replace("*", ".*")
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.SENDER_EMAIL,
+                        match_type=MatchType.REGEX,
+                        pattern=regex_pattern,
+                    ))
+                else:
+                    rule_conditions.append(RuleCondition(
+                        source=MatchSource.SENDER_EMAIL,
+                        match_type=MatchType.EXACT,
+                        pattern=sender_pattern,
+                    ))
 
         nifs = pdf_info.get("nifs", [])
         if nifs:
@@ -832,22 +1359,67 @@ class InvoiceProcessor:
 
         console.print(f"\n3. Assunto: [cyan]{invoice.subject[:50]}[/cyan]")
         if Confirm.ask("   Incluir padrão do assunto?", default=False):
-            pattern = Prompt.ask("   Padrão", default=invoice.subject[:30])
-            if pattern:
-                rule_conditions.append(RuleCondition(
-                    source=MatchSource.SUBJECT,
-                    match_type=MatchType.CONTAINS,
-                    pattern=pattern,
-                ))
+            condition = self._prompt_pattern_with_viewing(
+                "assunto",
+                invoice.subject,
+                MatchSource.SUBJECT,
+                invoice,
+                pdf_info,
+                email_body,
+                default_pattern=invoice.subject[:30],
+            )
+            if condition:
+                rule_conditions.append(condition)
+
+        # Option 4: Body pattern
+        if email_body:
+            console.print(f"\n4. Body do email: [cyan]{email_body[:50]}...[/cyan]")
+            if Confirm.ask("   Incluir padrão no body?", default=False):
+                condition = self._prompt_pattern_with_viewing(
+                    "body do email",
+                    email_body,
+                    MatchSource.BODY,
+                    invoice,
+                    pdf_info,
+                    email_body,
+                )
+                if condition:
+                    rule_conditions.append(condition)
+
+        # Option 5: PDF content
+        raw_text = pdf_info.get("raw_text", "")
+        if raw_text:
+            console.print(f"\n5. Conteúdo do PDF: [cyan]{raw_text[:50]}...[/cyan]")
+            if Confirm.ask("   Incluir padrão no PDF?", default=False):
+                condition = self._prompt_pattern_with_viewing(
+                    "conteúdo do PDF",
+                    raw_text,
+                    MatchSource.PDF_CONTENT,
+                    invoice,
+                    pdf_info,
+                    email_body,
+                )
+                if condition:
+                    rule_conditions.append(condition)
 
         if rule_conditions:
             rule_name = Prompt.ask("Nome da regra", default=f"Regra {entity.name}")
+
+            # Determine AND/OR for multiple conditions
+            match_all = True
+            if len(rule_conditions) > 1:
+                console.print("\nComo combinar as condições?")
+                console.print("  1. AND - Todas têm de corresponder")
+                console.print("  2. OR - Basta uma corresponder")
+                combo = Prompt.ask("Escolha", choices=["1", "2"], default="1")
+                match_all = combo == "1"
+
             self.rules_engine.create_rule(
                 name=rule_name,
                 conditions=rule_conditions,
                 action=RuleAction.ASSIGN_ENTITY,
                 action_value=entity.id,
-                match_all=len(rule_conditions) == 1,
+                match_all=match_all,
             )
             console.print(f"[green]Regra criada![/green]")
         else:
@@ -1008,6 +1580,8 @@ class InvoiceProcessor:
             entity, match_reason = self.find_entity_for_invoice(invoice, pdf_info, email_body)
             rule_condition = None
             action = None
+            reason_code = None
+            reason_label = None
 
             if entity:
                 # Known entity - organize automatically
@@ -1020,16 +1594,26 @@ class InvoiceProcessor:
                 if not suppress_output:
                     console.print(f"\n[yellow]?[/yellow] {invoice.file_name}")
                 self.show_invoice_summary(invoice, pdf_info)
-                entity, rule_condition, action = self.prompt_for_entity(invoice, pdf_info, email_body)
+                entity, rule_condition, action, reason_code, reason_label = self.prompt_for_entity(
+                    invoice, pdf_info, email_body
+                )
+
+                # Check if user chose undo
+                if entity == "undo":
+                    return ProcessedInvoice(
+                        original=invoice,
+                        success=False,
+                        error="Undo - reprocessar",
+                    ), None, "undo"
 
             # Check if user chose to delete the file
             if isinstance(entity, _DeleteMarker):
                 # Delete the file permanently
                 try:
                     invoice.file_path.unlink()
-                    self._session_stats["deleted"].append(
-                        (invoice.file_name, f"Manual: {rule_condition.pattern if rule_condition else 'individual'}")
-                    )
+                    reason_desc = reason_label if reason_label else "individual"
+                    self._session_stats["deleted"].append((invoice.file_name, reason_desc))
+                    # Note: Cannot undo delete
                     return ProcessedInvoice(
                         original=invoice,
                         success=True,
@@ -1045,11 +1629,11 @@ class InvoiceProcessor:
 
             # Check if user chose to ignore the file
             if isinstance(entity, _IgnoreMarker):
-                self._session_stats["ignored"].append(
-                    (invoice.file_name, f"Manual: {rule_condition.pattern if rule_condition else 'individual'}")
-                )
-                # Add to pending queue
-                self.registry.add_to_pending({
+                reason_desc = reason_label if reason_label else "individual"
+                self._session_stats["ignored"].append((invoice.file_name, reason_desc))
+
+                # Add to pending queue with reason info
+                pending_data = {
                     "file_path": str(invoice.file_path),
                     "file_name": invoice.file_name,
                     "detected_type": "fatura",
@@ -1059,7 +1643,32 @@ class InvoiceProcessor:
                     "amount": pdf_info.get("amount"),
                     "nifs": pdf_info.get("nifs", []),
                     "pending_reason": "Ignorado pelo utilizador",
-                })
+                }
+                # Add reason info if available
+                if reason_code:
+                    pending_data["ignore_reason"] = reason_code
+                    pending_data["ignore_reason_label"] = reason_label
+
+                self.registry.add_to_pending(pending_data)
+
+                # Track for undo (get the pending ID from registry)
+                pending_docs = self.registry.get_pending_documents()
+                pending_id = pending_docs[-1].get("id") if pending_docs else None
+
+                # Create undo action
+                rule_id = None
+                if rule_condition:
+                    # Rule will be created later, get ID after creation
+                    pass
+
+                undo_action = UndoAction(
+                    file_path=invoice.file_path,
+                    action_type="ignore",
+                    pending_id=pending_id,
+                    rule_id=rule_id,
+                )
+                self._undo_stack.push(undo_action)
+
                 return ProcessedInvoice(
                     original=invoice,
                     success=False,
@@ -1083,11 +1692,21 @@ class InvoiceProcessor:
                     document_date=pdf_info.get("date"),
                     emitter_entity_id=entity.id,
                 )
-                self.registry.add_document(doc_record)
+                doc_record = self.registry.add_document(doc_record)
 
                 self._session_stats["organized"].append(
                     (invoice.file_name, entity.name, str(dest_path))
                 )
+
+                # Track for undo
+                undo_action = UndoAction(
+                    file_path=invoice.file_path,
+                    action_type="organize",
+                    destination=dest_path,
+                    entity_id=entity.id,
+                    document_id=doc_record.id,
+                )
+                self._undo_stack.push(undo_action)
 
                 return ProcessedInvoice(
                     original=invoice,
@@ -1227,8 +1846,9 @@ class InvoiceProcessor:
             console.print("[yellow]Nenhuma fatura para processar.[/yellow]")
             return []
 
-        # Reset session stats
+        # Reset session stats and undo stack
         self.reset_session_stats()
+        self._undo_stack.clear()
 
         # Suppress logging during interactive processing
         if interactive:
@@ -1254,16 +1874,29 @@ class InvoiceProcessor:
                     auto_action=auto_action,
                     suppress_output=bool(auto_action),  # Don't show output for auto-processed
                 )
+
+                # Handle undo action - reprocess current invoice
+                if action == "undo":
+                    # Don't add to results, continue with same index
+                    continue
+
                 results.append(result)
 
                 # If user created an ignore/delete rule, create it and apply to remaining
-                if rule_condition and action:
+                if rule_condition and action and action != "undo":
                     # Create the rule
                     rule = self._create_ignore_rule(
                         rule_condition,
                         action,
                         rule_condition.pattern,
                     )
+
+                    # Update the undo action with the rule ID
+                    if self._undo_stack.can_undo():
+                        last_action = self._undo_stack.peek()
+                        if last_action and last_action.file_path == invoice.file_path:
+                            last_action.rule_id = rule.id
+
                     console.print(
                         f"\n[dim]Regra criada: '{rule.name}' - "
                         f"a verificar {len(invoices) - i - 1} documentos restantes...[/dim]"

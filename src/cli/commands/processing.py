@@ -70,6 +70,99 @@ def processar(
         console.print("[dim]Use: bank-extractor pendentes[/dim]")
 
 
+def _get_unprocessed_files() -> list[Path]:
+    """Get files in _pendentes folder that haven't been processed yet."""
+    pending_dir = settings.faturas_temp_dir
+    if not pending_dir.exists():
+        return []
+
+    # Get all PDF files in the folder (use set to avoid duplicates from case)
+    files_lower = set(pending_dir.glob("*.pdf"))
+    files_upper = set(pending_dir.glob("*.PDF"))
+    files = list(files_lower | files_upper)
+    return sorted(files, key=lambda f: f.name)
+
+
+def _safe_filename(name: str, max_len: int = 50) -> str:
+    """Get a safe filename for display, handling encoding issues."""
+    # Replace problematic characters
+    safe = name.encode("ascii", errors="replace").decode("ascii")
+    if len(safe) > max_len:
+        safe = safe[:max_len] + "..."
+    return safe
+
+
+def _show_pending_summary():
+    """Show comprehensive summary of pending documents."""
+    registry = get_document_registry()
+
+    # Get files from _pendentes folder
+    unprocessed_files = _get_unprocessed_files()
+
+    # Get ignored documents from registry
+    ignored_docs = registry.get_pending_documents()
+
+    # Get set of file names that are in the registry (to avoid duplicates)
+    ignored_file_names = {doc.get("file_name", "") for doc in ignored_docs}
+
+    # Filter unprocessed files (those not in the registry)
+    truly_unprocessed = [f for f in unprocessed_files if f.name not in ignored_file_names]
+
+    total_count = len(truly_unprocessed) + len(ignored_docs)
+
+    if total_count == 0:
+        console.print("[green]Não há documentos pendentes.[/green]")
+        return
+
+    # Section 1: Unprocessed files (in folder but not in registry)
+    if truly_unprocessed:
+        table = Table(title=f"Por Processar ({len(truly_unprocessed)})")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Ficheiro", style="white")
+        table.add_column("Tamanho", style="cyan", justify="right")
+
+        for i, f in enumerate(truly_unprocessed[:20], 1):  # Show max 20
+            size_kb = f.stat().st_size / 1024
+            table.add_row(
+                str(i),
+                _safe_filename(f.name, 50),
+                f"{size_kb:.1f} KB",
+            )
+
+        if len(truly_unprocessed) > 20:
+            table.add_row("...", f"... e mais {len(truly_unprocessed) - 20} ficheiros", "")
+
+        console.print(table)
+        console.print(f"[dim]Use: bank-extractor processar {settings.faturas_temp_dir} --interativo[/dim]\n")
+
+    # Section 2: Ignored documents (in registry)
+    if ignored_docs:
+        table = Table(title=f"Ignorados ({len(ignored_docs)})")
+        table.add_column("ID", style="dim", width=8)
+        table.add_column("Ficheiro", style="white")
+        table.add_column("Razao", style="yellow")
+        table.add_column("Remetente", style="cyan", max_width=25)
+
+        for doc in ignored_docs[:20]:  # Show max 20
+            reason = doc.get("ignore_reason_label") or doc.get("pending_reason", "N/A")
+            table.add_row(
+                doc.get("id", "")[:8],
+                _safe_filename(doc.get("file_name", "N/A"), 40),
+                _safe_filename(reason, 20),
+                _safe_filename(doc.get("sender", "N/A"), 25),
+            )
+
+        if len(ignored_docs) > 20:
+            table.add_row("...", f"... e mais {len(ignored_docs) - 20} documentos", "", "")
+
+        console.print(table)
+
+    # Summary
+    console.print(f"\n[bold]Total: {total_count} documentos pendentes[/bold]")
+    console.print(f"  - Por processar: {len(truly_unprocessed)}")
+    console.print(f"  - Ignorados: {len(ignored_docs)}")
+
+
 def pendentes(
     processar_todos: bool = typer.Option(
         False,
@@ -84,10 +177,30 @@ def pendentes(
     limpar: bool = typer.Option(
         False,
         "--limpar",
-        help="Limpar a fila de pendentes",
+        help="Limpar a fila de pendentes (apenas ignorados)",
+    ),
+    razao: Optional[str] = typer.Option(
+        None,
+        "--razao", "-r",
+        help="Filtrar por razao (spam, duplicado, pessoal, irrelevante, incompleto, outro, sem_razao)",
+    ),
+    stats: bool = typer.Option(
+        False,
+        "--stats", "-s",
+        help="Mostrar estatisticas por razao",
+    ),
+    restaurar: Optional[str] = typer.Option(
+        None,
+        "--restaurar",
+        help="Remover documento da lista de ignorados por ID (primeiros 8 chars)",
+    ),
+    reprocessar: Optional[str] = typer.Option(
+        None,
+        "--reprocessar",
+        help="Remover da lista de ignorados e reprocessar imediatamente (ID)",
     ),
 ):
-    """Gerir documentos pendentes de classificação."""
+    """Gerir documentos pendentes de classificacao."""
     console.print(Panel.fit(
         f"[bold yellow]Bank Extractor v{__version__}[/bold yellow]\n"
         "Documentos Pendentes",
@@ -96,22 +209,153 @@ def pendentes(
 
     registry = get_document_registry()
 
+    # Handle restaurar (remove from ignored list)
+    if restaurar:
+        pending = registry.get_pending_documents()
+        found = None
+        for doc in pending:
+            if doc.get("id", "").startswith(restaurar):
+                found = doc
+                break
+
+        if not found:
+            console.print(f"[red]Documento nao encontrado com ID: {restaurar}[/red]")
+            console.print("[dim]Use 'bank-extractor pendentes --listar' para ver os IDs[/dim]")
+            return
+
+        console.print(f"\n[bold]Documento encontrado:[/bold]")
+        console.print(f"  Ficheiro: [cyan]{found.get('file_name', 'N/A')}[/cyan]")
+        console.print(f"  Remetente: [cyan]{found.get('sender', 'N/A')}[/cyan]")
+        console.print(f"  Razao: [yellow]{found.get('ignore_reason_label') or found.get('pending_reason', 'N/A')}[/yellow]")
+
+        if Confirm.ask("\nRemover da lista de ignorados?", default=True):
+            registry.remove_from_pending(found["id"])
+            console.print("[green]Documento removido da lista de ignorados.[/green]")
+            console.print(f"[dim]O ficheiro continua em: {found.get('file_path', 'N/A')}[/dim]")
+            console.print("[dim]Use 'bank-extractor processar <pasta> --interativo' para reprocessar[/dim]")
+        return
+
+    # Handle reprocessar (remove from ignored and process immediately)
+    if reprocessar:
+        pending = registry.get_pending_documents()
+        found = None
+        for doc in pending:
+            if doc.get("id", "").startswith(reprocessar):
+                found = doc
+                break
+
+        if not found:
+            console.print(f"[red]Documento nao encontrado com ID: {reprocessar}[/red]")
+            console.print("[dim]Use 'bank-extractor pendentes --listar' para ver os IDs[/dim]")
+            return
+
+        file_path = Path(found.get("file_path", ""))
+        if not file_path.exists():
+            console.print(f"[red]Ficheiro nao encontrado: {file_path}[/red]")
+            console.print("[dim]O ficheiro pode ter sido movido ou eliminado.[/dim]")
+            return
+
+        console.print(f"\n[bold]A reprocessar:[/bold] {found.get('file_name', 'N/A')}")
+
+        # Remove from pending
+        registry.remove_from_pending(found["id"])
+
+        # Create a DownloadedInvoice-like object and process it
+        from datetime import datetime
+        from src.modules.invoices.base import DownloadedInvoice
+        from src.modules.invoices.invoice_processor import InvoiceProcessor
+
+        invoice = DownloadedInvoice(
+            file_path=file_path,
+            file_name=found.get("file_name", file_path.name),
+            sender=found.get("sender", ""),
+            subject=found.get("subject", ""),
+            date=datetime.fromisoformat(found.get("email_date", datetime.now().isoformat())),
+            file_size=file_path.stat().st_size if file_path.exists() else 0,
+            email_body=found.get("email_body"),
+        )
+
+        processor = InvoiceProcessor()
+        processor.reset_session_stats()
+        result, _, _ = processor.process_invoice(invoice, interactive=True, move=True)
+
+        if result.success:
+            console.print(f"[green]Documento processado com sucesso![/green]")
+            if result.destination_path:
+                console.print(f"[dim]Movido para: {result.destination_path}[/dim]")
+        else:
+            console.print(f"[yellow]Documento nao processado: {result.error}[/yellow]")
+        return
+
     if limpar:
         pending = registry.get_pending_documents()
         if pending:
-            if Confirm.ask(f"Limpar {len(pending)} documentos pendentes?"):
+            if Confirm.ask(f"Limpar {len(pending)} documentos ignorados da fila?"):
                 for doc in pending:
                     registry.remove_from_pending(doc["id"])
-                console.print("[green]Fila de pendentes limpa.[/green]")
+                console.print("[green]Fila de ignorados limpa.[/green]")
         else:
-            console.print("[green]Não há documentos pendentes.[/green]")
+            console.print("[green]Não há documentos ignorados na fila.[/green]")
         return
 
-    if listar or (not processar_todos):
-        registry.show_pending_summary()
-        pending_count = registry.get_pending_count()
-        if pending_count > 0:
-            console.print(f"\n[dim]Use: bank-extractor pendentes --processar[/dim]")
+    if stats:
+        # Show stats for both unprocessed and ignored
+        unprocessed_files = _get_unprocessed_files()
+        ignored_docs = registry.get_pending_documents()
+
+        # Get ignored file names to avoid double counting
+        ignored_file_names = {doc.get("file_name", "") for doc in ignored_docs}
+        truly_unprocessed = [f for f in unprocessed_files if f.name not in ignored_file_names]
+
+        console.print(f"\n[bold]Resumo Geral:[/bold]")
+        console.print(f"  - Ficheiros por processar: [cyan]{len(truly_unprocessed)}[/cyan]")
+        console.print(f"  - Documentos ignorados: [yellow]{len(ignored_docs)}[/yellow]")
+        console.print(f"  - [bold]Total: {len(truly_unprocessed) + len(ignored_docs)}[/bold]")
+
+        # Show stats by reason for ignored documents
+        pending_stats = registry.get_pending_stats()
+        if pending_stats:
+            console.print(f"\n[bold]Ignorados por Razao:[/bold]")
+            table = Table()
+            table.add_column("Razao", style="cyan")
+            table.add_column("Codigo", style="dim")
+            table.add_column("Total", style="yellow", justify="right")
+
+            for reason_label, (reason_code, count) in sorted(pending_stats.items(), key=lambda x: -x[1][1]):
+                table.add_row(_safe_filename(reason_label, 30), reason_code, str(count))
+
+            console.print(table)
+
+        console.print(f"\n[dim]Use: bank-extractor pendentes --listar[/dim]")
+        console.print(f"[dim]Use: bank-extractor pendentes --razao <codigo>[/dim]")
+        return
+
+    if razao:
+        # Filter ignored documents by reason
+        pending = registry.get_pending_by_reason(razao)
+        if not pending:
+            console.print(f"[yellow]Nenhum documento ignorado com razão '{razao}'.[/yellow]")
+            return
+
+        table = Table(title=f"Documentos Ignorados - Razao: {razao} ({len(pending)})")
+        table.add_column("ID", style="dim", width=8)
+        table.add_column("Ficheiro", style="white")
+        table.add_column("Remetente", style="cyan", max_width=30)
+        table.add_column("Valor", style="green", justify="right")
+
+        for doc in pending:
+            table.add_row(
+                doc.get("id", "")[:8],
+                doc.get("file_name", "N/A")[:40],
+                doc.get("sender", "N/A")[:30],
+                doc.get("amount", "N/A"),
+            )
+
+        console.print(table)
+        return
+
+    if listar or not processar_todos:
+        _show_pending_summary()
         return
 
     if processar_todos:

@@ -128,10 +128,18 @@ bank-extractor documento <id> [--abrir]
 ### Document Processing & Entities (Phase 6)
 ```bash
 bank-extractor processar [directory] [--interativo/--auto] [--mover] [--recursivo]
-bank-extractor pendentes [--listar] [--processar] [--limpar]
+bank-extractor pendentes [--listar] [--processar] [--limpar] [--stats] [--razao X] [--restaurar ID] [--reprocessar ID]
 bank-extractor entidades listar|criar|ver|editar [--nome X] [--pasta X] [--nif X] [--iban X]
 bank-extractor gerir-faturas organizar|listar|stats|categorias [--pasta X] [--mover]
 ```
+
+Options for `pendentes`:
+- `--listar/-l`: Show pending files (unprocessed + ignored)
+- `--stats/-s`: Show statistics by ignore reason
+- `--razao/-r X`: Filter by reason code (spam, duplicado, pessoal, irrelevante, incompleto, outro, sem_razao)
+- `--restaurar ID`: Remove document from ignored list (by ID prefix)
+- `--reprocessar ID`: Remove from ignored and reprocess immediately
+- `--limpar`: Clear ignored documents queue
 
 ### Reports (Phase 4)
 ```bash

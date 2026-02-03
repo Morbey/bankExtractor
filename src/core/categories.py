@@ -309,3 +309,23 @@ class InvoiceCategorizer:
             Folder name string.
         """
         return category.value
+
+
+# Reasons for ignoring documents (leaving them pending)
+IGNORE_REASONS = {
+    "spam": "Spam ou publicidade",
+    "duplicado": "Documento duplicado",
+    "pessoal": "Documento pessoal (não empresarial)",
+    "irrelevante": "Não relevante para contabilidade",
+    "incompleto": "Documento incompleto ou corrompido",
+    "outro": "Outra razão",
+}
+
+# Reasons for deleting documents permanently
+DELETE_REASONS = {
+    "spam": "Spam ou publicidade",
+    "duplicado": "Documento duplicado",
+    "teste": "Ficheiro de teste",
+    "erro": "Download com erro",
+    "outro": "Outra razão",
+}

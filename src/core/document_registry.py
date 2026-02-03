@@ -524,6 +524,69 @@ class DocumentRegistry:
         """Get count of pending documents."""
         return len(self._pending)
 
+    def get_pending_by_reason(self, reason_code: str) -> list[dict]:
+        """Get pending documents filtered by ignore reason.
+
+        Args:
+            reason_code: The reason code to filter by (e.g., "spam", "duplicado").
+                         Use "sem_razao" or "none" for documents without a reason.
+
+        Returns:
+            List of pending documents with matching reason.
+        """
+        if reason_code in ("sem_razao", "none", "sem razao"):
+            # Return documents without a reason
+            return [
+                doc for doc in self._pending
+                if not doc.get("ignore_reason")
+            ]
+        return [
+            doc for doc in self._pending
+            if doc.get("ignore_reason") == reason_code
+        ]
+
+    def get_pending_stats(self) -> dict[str, tuple[str, int]]:
+        """Get statistics of pending documents grouped by reason.
+
+        Returns:
+            Dictionary mapping reason labels to (reason_code, count).
+            For documents without a reason, code is "sem_razao".
+        """
+        stats: dict[str, tuple[str, int]] = {}
+        no_reason_count = 0
+
+        for doc in self._pending:
+            reason_label = doc.get("ignore_reason_label")
+            reason_code = doc.get("ignore_reason")
+            if reason_label and reason_code:
+                if reason_label in stats:
+                    stats[reason_label] = (reason_code, stats[reason_label][1] + 1)
+                else:
+                    stats[reason_label] = (reason_code, 1)
+            else:
+                no_reason_count += 1
+
+        if no_reason_count > 0:
+            stats["Sem razao definida (sem_razao)"] = ("sem_razao", no_reason_count)
+
+        return stats
+
+    def remove_pending_by_file_path(self, file_path: str) -> bool:
+        """Remove a pending document by file path.
+
+        Args:
+            file_path: Path to the file.
+
+        Returns:
+            True if removed, False if not found.
+        """
+        for i, doc in enumerate(self._pending):
+            if doc.get("file_path") == file_path:
+                self._pending.pop(i)
+                self._save_pending()
+                return True
+        return False
+
     # =========================================================================
     # Display Methods
     # =========================================================================

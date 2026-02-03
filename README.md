@@ -107,6 +107,23 @@ O sistema:
 4. Se desconhecida, pede para criar ou adicionar a existente
 5. Organiza na pasta correta: `faturas/<ano>/<categoria>/<entidade>/`
 
+#### Menu Interativo
+
+Durante o processamento, para cada documento desconhecido:
+1. **Criar nova entidade** - Cria entidade e regra de classificacao
+2. **Associar a entidade existente** - Liga a uma entidade ja registada
+3. **Ver mais informacao** - Mostra body do email, conteudo do PDF
+4. **Ignorar** - Deixa pendente (escolhe razao e pode criar regra)
+5. **Eliminar** - Remove permanentemente (escolhe razao e pode criar regra)
+6. **Voltar atras** - Desfaz a ultima acao (se disponivel)
+
+#### Padroes para Regras
+
+Ao criar regras de classificacao, pode usar:
+- **Wildcards**: `*@vodafone.pt` (qualquer email da vodafone), `*fatura*` (contem "fatura")
+- **Multiplos padroes (OR)**: `termo1|termo2|termo3` (corresponde a qualquer um)
+- **Visualizacao interativa**: Durante a definicao do padrao, use `v` (ver campo), `b` (body), `p` (PDF), `a` (abrir ficheiro)
+
 ### 4. Gerir Entidades
 
 ```bash
@@ -125,16 +142,51 @@ bank-extractor entidades editar --id abc123 --iban PT50001234567890123456789
 
 ### 5. Documentos Pendentes
 
+O comando `pendentes` mostra duas categorias:
+- **Por Processar**: Ficheiros na pasta `_pendentes/` que ainda nao foram processados
+- **Ignorados**: Documentos explicitamente ignorados durante o processamento
+
 ```bash
-# Ver documentos na fila de pendentes
+# Ver todos os documentos pendentes (ambas categorias)
 bank-extractor pendentes --listar
 
-# Processar pendentes interativamente
+# Ver estatisticas por razao de ignorar
+bank-extractor pendentes --stats
+
+# Filtrar ignorados por razao (spam, duplicado, pessoal, irrelevante, incompleto, outro, sem_razao)
+bank-extractor pendentes --razao spam
+
+# Remover documento da lista de ignorados (por ID)
+bank-extractor pendentes --restaurar 8826ac63
+
+# Remover e reprocessar imediatamente
+bank-extractor pendentes --reprocessar 8826ac63
+
+# Processar todos os pendentes interativamente
 bank-extractor pendentes --processar
 
-# Limpar fila de pendentes
+# Limpar fila de ignorados
 bank-extractor pendentes --limpar
 ```
+
+#### Razoes para Ignorar/Eliminar
+
+Ao ignorar ou eliminar um documento, pode escolher uma razao:
+- `spam` - Spam ou publicidade
+- `duplicado` - Documento duplicado
+- `pessoal` - Documento pessoal (nao empresarial)
+- `irrelevante` - Nao relevante para contabilidade
+- `incompleto` - Documento incompleto ou corrompido
+- `outro` - Outra razao
+
+#### Funcao Undo
+
+Durante o processamento interativo, pode desfazer a ultima acao (opcao 6 no menu).
+Acoes que podem ser desfeitas:
+- Organizacao de documentos (volta para `_pendentes/`)
+- Ignorar documentos (remove da fila de ignorados)
+
+**Nota**: Eliminacao de ficheiros nao pode ser desfeita.
 
 ### 6. Extratos Bancários
 
