@@ -368,6 +368,23 @@ class DocumentRegistry:
             self._entities[entity.id] = entity
             self._save_entities()
 
+    def delete_entity(self, entity_id: str) -> bool:
+        """Delete an entity.
+
+        Args:
+            entity_id: ID of entity to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        if entity_id in self._entities:
+            entity_name = self._entities[entity_id].name
+            del self._entities[entity_id]
+            self._save_entities()
+            logger.info(f"Deleted entity: {entity_name}")
+            return True
+        return False
+
     def add_iban_to_entity(self, entity_id: str, iban: str) -> bool:
         """Add an IBAN to an entity."""
         entity = self.get_entity(entity_id)

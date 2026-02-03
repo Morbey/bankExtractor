@@ -1275,11 +1275,40 @@ def entidades(
             registry.update_entity(entity)
             console.print(f"[green]Pasta actualizada: {pasta}[/green]")
 
+        if scope:
+            try:
+                entity.scope = AccountingScope(scope.lower())
+                registry.update_entity(entity)
+                console.print(f"[green]Âmbito actualizado: {scope}[/green]")
+            except ValueError:
+                console.print(f"[yellow]Âmbito inválido: {scope}[/yellow]")
+
         registry.show_entity_summary(entity_id)
+
+    elif acao_lower == "eliminar":
+        if not entity_id:
+            console.print("[red]ID é obrigatório para eliminar. Use --id[/red]")
+            raise typer.Exit(1)
+
+        entity = registry.get_entity(entity_id)
+        if not entity:
+            console.print(f"[red]Entidade não encontrada: {entity_id}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[yellow]Vai eliminar a entidade:[/yellow]")
+        console.print(f"  Nome: {entity.name}")
+        console.print(f"  Pasta: {entity.folder_name}")
+        console.print(f"  Âmbito: {entity.scope.value}")
+
+        if Confirm.ask("\nConfirma eliminação?", default=False):
+            registry.delete_entity(entity_id)
+            console.print("[green]Entidade eliminada.[/green]")
+        else:
+            console.print("[dim]Cancelado.[/dim]")
 
     else:
         console.print(f"[red]Ação desconhecida: {acao}[/red]")
-        console.print("Ações disponíveis: listar, criar, ver, editar")
+        console.print("Ações disponíveis: listar, criar, ver, editar, eliminar")
         raise typer.Exit(1)
 
 
@@ -1287,12 +1316,22 @@ def entidades(
 def regras(
     acao: str = typer.Argument(
         "listar",
-        help="Ação: listar, ver, eliminar, activar, desactivar",
+        help="Ação: listar, ver, editar, eliminar, activar, desactivar",
     ),
     rule_id: Optional[str] = typer.Option(
         None,
         "--id",
-        help="ID da regra (para ver/eliminar/activar/desactivar)",
+        help="ID da regra",
+    ),
+    nome: Optional[str] = typer.Option(
+        None,
+        "--nome", "-n",
+        help="Novo nome da regra (para editar)",
+    ),
+    prioridade: Optional[int] = typer.Option(
+        None,
+        "--prioridade", "-p",
+        help="Nova prioridade (menor = mais prioritário)",
     ),
 ):
     """Gerir regras de classificação automática."""
@@ -1453,9 +1492,45 @@ def regras(
         else:
             console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
 
+    elif acao_lower == "editar":
+        if not rule_id:
+            console.print("[red]ID é obrigatório. Use --id[/red]")
+            raise typer.Exit(1)
+
+        rule = rules_engine.get_rule(rule_id)
+        if not rule:
+            # Try partial match
+            rules = rules_engine.get_all_rules()
+            for r in rules:
+                if r.id.startswith(rule_id):
+                    rule = r
+                    break
+
+        if not rule:
+            console.print(f"[red]Regra não encontrada: {rule_id}[/red]")
+            raise typer.Exit(1)
+
+        updated = False
+
+        if nome:
+            rule.name = nome
+            updated = True
+            console.print(f"[green]Nome actualizado: {nome}[/green]")
+
+        if prioridade is not None:
+            rule.priority = prioridade
+            updated = True
+            console.print(f"[green]Prioridade actualizada: {prioridade}[/green]")
+
+        if updated:
+            rules_engine.update_rule(rule)
+        else:
+            console.print("[yellow]Nenhuma alteração especificada.[/yellow]")
+            console.print("Use --nome ou --prioridade para editar")
+
     else:
         console.print(f"[red]Ação desconhecida: {acao}[/red]")
-        console.print("Ações disponíveis: listar, ver, eliminar, activar, desactivar")
+        console.print("Ações disponíveis: listar, ver, editar, eliminar, activar, desactivar")
         raise typer.Exit(1)
 
 
