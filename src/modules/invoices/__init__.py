@@ -1,14 +1,3 @@
-"""Invoice download and processing module."""
-
-from src.modules.invoices.email_client import EmailAttachment, EmailClient, InvoiceEmail
-from src.modules.invoices.pdf_parser import InvoiceMetadata, PDFInvoiceParser
-
-__all__ = [
-    "EmailClient",
-    "InvoiceEmail",
-    "EmailAttachment",
-    "PDFInvoiceParser",
-    "InvoiceMetadata",
 """Invoice download module (Phase 2).
 
 This module provides email-based invoice downloading functionality.
@@ -32,8 +21,10 @@ from .base import (
     EmailProviderBase,
 )
 from .downloader import EMAIL_PROVIDERS, InvoiceDownloader
+from .email_client import EmailAttachment, EmailClient, InvoiceEmail
 from .gmail import GmailProvider
 from .hotmail import HotmailProvider
+from .pdf_parser import InvoiceMetadata, PDFInvoiceParser
 
 __all__ = [
     # Base classes and data types
@@ -47,4 +38,11 @@ __all__ = [
     "EMAIL_PROVIDERS",
     # Main downloader
     "InvoiceDownloader",
+    # Legacy email client (for backward compatibility)
+    "EmailClient",
+    "InvoiceEmail",
+    "EmailAttachment",
+    # PDF parsing
+    "PDFInvoiceParser",
+    "InvoiceMetadata",
 ]

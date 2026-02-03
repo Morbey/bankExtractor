@@ -20,7 +20,9 @@ Example usage:
 """
 
 from .classifier import ClassificationResult, DocumentClassifier, classify_document
+from .file_organizer import InvoiceOrganizer, OrganizedInvoice
 from .indexer import DocumentIndexer, IndexResult, SearchResult
+from .invoice_database import InvoiceDatabase
 from .models import (
     Document,
     DocumentStatus,
@@ -55,4 +57,9 @@ __all__ = [
     "DocumentIndexer",
     "IndexResult",
     "SearchResult",
+    # File organizer
+    "InvoiceOrganizer",
+    "OrganizedInvoice",
+    # Invoice database
+    "InvoiceDatabase",
 ]
