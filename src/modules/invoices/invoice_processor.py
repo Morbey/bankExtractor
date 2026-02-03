@@ -21,6 +21,7 @@ from rich.table import Table
 
 from src.core.config import settings
 from src.core.classification_rules import (
+    ClassificationRule,
     ClassificationRulesEngine,
     MatchSource,
     MatchType,
@@ -37,7 +38,7 @@ from src.core.document_registry import (
     EntityType,
     get_document_registry,
 )
-from src.core.logger import get_logger
+from src.core.logger import get_logger, set_logging_suppressed
 from src.modules.invoices.base import DownloadedInvoice
 
 console = Console()
@@ -49,7 +50,13 @@ class _DeleteMarker:
     pass
 
 
+class _IgnoreMarker:
+    """Marker to indicate file should be ignored (left pending but skipped)."""
+    pass
+
+
 DELETE_FILE = _DeleteMarker()
+IGNORE_FILE = _IgnoreMarker()
 
 
 @dataclass
@@ -83,11 +90,28 @@ class InvoiceProcessor:
         re.compile(r"(\d{2}-\d{2}-\d{4})"),
     ]
 
+    # Ignore reason options
+    IGNORE_REASONS = {
+        "1": ("sender", "Este remetente (todos os emails deste endereço)"),
+        "2": ("subject_pattern", "Padrão no assunto"),
+        "3": ("filename_pattern", "Padrão no nome do ficheiro"),
+        "4": ("this_only", "Apenas este documento (sem regra)"),
+    }
+
     def __init__(self):
         """Initialize the invoice processor."""
         self.registry = get_document_registry()
         self.rules_engine = get_rules_engine()
         self._pdf_parser = None
+        # Session statistics (for summary at the end)
+        self._session_stats = {
+            "organized": [],      # List of (filename, entity_name, dest_path)
+            "deleted": [],        # List of (filename, reason)
+            "ignored": [],        # List of (filename, reason)
+            "auto_ignored": [],   # List of (filename, rule_name)
+            "auto_deleted": [],   # List of (filename, rule_name)
+            "errors": [],         # List of (filename, error)
+        }
 
     @property
     def pdf_parser(self):
@@ -197,6 +221,17 @@ class InvoiceProcessor:
 
         console.print(Panel(pdf_table, border_style="green"))
 
+    def reset_session_stats(self) -> None:
+        """Reset session statistics for a new processing batch."""
+        self._session_stats = {
+            "organized": [],
+            "deleted": [],
+            "ignored": [],
+            "auto_ignored": [],
+            "auto_deleted": [],
+            "errors": [],
+        }
+
     def build_rule_data(
         self,
         invoice: DownloadedInvoice,
@@ -222,6 +257,150 @@ class InvoiceProcessor:
             MatchSource.PDF_NIF.value: ",".join(pdf_info.get("nifs", [])),
             MatchSource.PDF_VENDOR.value: pdf_info.get("vendor", ""),
         }
+
+    def check_ignore_rules(
+        self,
+        invoice: DownloadedInvoice,
+        pdf_info: dict,
+        email_body: Optional[str] = None,
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Check if any ignore rules match this invoice.
+
+        Args:
+            invoice: Downloaded invoice.
+            pdf_info: Extracted PDF info.
+            email_body: Optional email body content.
+
+        Returns:
+            Tuple of (should_ignore, action_value, rule_name).
+            action_value is 'delete' for permanent deletion, 'ignore' for pending.
+        """
+        rule_data = self.build_rule_data(invoice, pdf_info, email_body)
+        rule_match = self.rules_engine.get_best_match(rule_data)
+
+        if rule_match and rule_match.action == RuleAction.MARK_IGNORE:
+            return True, rule_match.action_value, rule_match.rule.name
+
+        return False, None, None
+
+    def _prompt_ignore_reason(
+        self,
+        invoice: DownloadedInvoice,
+        action: str,  # "ignore" or "delete"
+    ) -> tuple[Optional[RuleCondition], str]:
+        """Prompt user to select reason for ignoring/deleting.
+
+        Args:
+            invoice: Invoice being ignored/deleted.
+            action: "ignore" or "delete".
+
+        Returns:
+            Tuple of (rule_condition, reason_description).
+        """
+        action_name = "ignorar" if action == "ignore" else "eliminar"
+        console.print(f"\n[bold]Porque quer {action_name} este documento?[/bold]")
+        console.print("[dim]Esta escolha será aplicada automaticamente a documentos similares.[/dim]\n")
+
+        for key, (_, desc) in self.IGNORE_REASONS.items():
+            console.print(f"  {key}. {desc}")
+
+        choice = Prompt.ask("Razão", choices=list(self.IGNORE_REASONS.keys()), default="1")
+        reason_type, reason_desc = self.IGNORE_REASONS[choice]
+
+        condition = None
+        description = ""
+
+        if reason_type == "sender":
+            condition = RuleCondition(
+                source=MatchSource.SENDER_EMAIL,
+                match_type=MatchType.EXACT,
+                pattern=invoice.sender,
+            )
+            description = f"Email: {invoice.sender}"
+
+        elif reason_type == "subject_pattern":
+            console.print(f"\nAssunto atual: [cyan]{invoice.subject}[/cyan]")
+            pattern = Prompt.ask("Padrão a procurar no assunto", default=invoice.subject[:30])
+            if pattern:
+                condition = RuleCondition(
+                    source=MatchSource.SUBJECT,
+                    match_type=MatchType.CONTAINS,
+                    pattern=pattern,
+                )
+                description = f"Assunto contém: {pattern}"
+
+        elif reason_type == "filename_pattern":
+            console.print(f"\nFicheiro: [cyan]{invoice.file_name}[/cyan]")
+            pattern = Prompt.ask("Padrão a procurar no nome", default=invoice.file_name.split(".")[0][:20])
+            if pattern:
+                condition = RuleCondition(
+                    source=MatchSource.FILENAME,
+                    match_type=MatchType.CONTAINS,
+                    pattern=pattern,
+                )
+                description = f"Nome contém: {pattern}"
+
+        elif reason_type == "this_only":
+            description = "Documento individual"
+
+        return condition, description
+
+    def _create_ignore_rule(
+        self,
+        condition: RuleCondition,
+        action: str,  # "ignore" or "delete"
+        description: str,
+    ) -> ClassificationRule:
+        """Create an ignore/delete rule.
+
+        Args:
+            condition: Rule condition to match.
+            action: "ignore" or "delete".
+            description: Human-readable description.
+
+        Returns:
+            Created rule.
+        """
+        rule_name = f"Auto-{action}: {description}"
+        return self.rules_engine.create_rule(
+            name=rule_name,
+            conditions=[condition],
+            action=RuleAction.MARK_IGNORE,
+            action_value=action,  # "ignore" or "delete"
+            description=f"Criada automaticamente: {description}",
+            priority=50,  # High priority for ignore rules
+            match_all=True,
+        )
+
+    def apply_ignore_rules_to_queue(
+        self,
+        invoices: list[DownloadedInvoice],
+        current_index: int,
+    ) -> dict[int, tuple[str, str]]:
+        """Apply ignore rules to remaining invoices in queue.
+
+        Args:
+            invoices: Full list of invoices.
+            current_index: Current processing index.
+
+        Returns:
+            Dictionary mapping invoice index to (action, rule_name) for matches.
+        """
+        auto_actions = {}
+
+        for i in range(current_index + 1, len(invoices)):
+            invoice = invoices[i]
+            try:
+                pdf_info = self.extract_pdf_info(invoice.file_path)
+                should_ignore, action_value, rule_name = self.check_ignore_rules(
+                    invoice, pdf_info, invoice.email_body
+                )
+                if should_ignore:
+                    auto_actions[i] = (action_value, rule_name)
+            except Exception:
+                pass  # Skip errors during pre-check
+
+        return auto_actions
 
     def find_entity_for_invoice(
         self,
@@ -274,16 +453,21 @@ class InvoiceProcessor:
         invoice: DownloadedInvoice,
         pdf_info: dict,
         email_body: Optional[str] = None,
-    ) -> Optional[Entity]:
+        create_rules: bool = True,
+    ) -> tuple[Optional[Entity], Optional[RuleCondition], Optional[str]]:
         """Prompt user to create or select an entity.
 
         Args:
             invoice: Downloaded invoice.
             pdf_info: Extracted PDF info.
             email_body: Optional email body content.
+            create_rules: If True, ask for rule creation on ignore/delete.
 
         Returns:
-            Selected or created entity, None to skip (pending), or DELETE_FILE marker.
+            Tuple of (entity_or_marker, rule_condition, action).
+            - entity_or_marker: Entity, DELETE_FILE, IGNORE_FILE, or None
+            - rule_condition: Condition for auto-applying to similar docs (or None)
+            - action: "delete", "ignore", or None
         """
         while True:
             console.print("\n[yellow]Entidade desconhecida![/yellow]")
@@ -292,29 +476,36 @@ class InvoiceProcessor:
             console.print("  2. Associar a entidade existente")
             console.print("  3. Ver mais informação (body/PDF)")
             console.print("  4. Ignorar (deixar pendente)")
-            console.print("  5. [red]Eliminar ficheiro (ignorar permanentemente)[/red]")
+            console.print("  5. [red]Eliminar ficheiro[/red]")
 
             choice = Prompt.ask("Escolha", choices=["1", "2", "3", "4", "5"], default="1")
 
             if choice == "1":
-                return self._create_entity_with_rule(invoice, pdf_info, email_body)
+                return self._create_entity_with_rule(invoice, pdf_info, email_body), None, None
             elif choice == "2":
                 entity = self._select_existing_entity(invoice, pdf_info, email_body)
                 if entity:
-                    return entity
+                    return entity, None, None
                 # If cancelled, show menu again
             elif choice == "3":
                 self._show_extended_info(invoice, pdf_info, email_body)
                 # Show menu again after displaying info
             elif choice == "4":
-                return None
+                # Ask for reason and create ignore rule
+                if create_rules:
+                    condition, description = self._prompt_ignore_reason(invoice, "ignore")
+                    return IGNORE_FILE, condition, "ignore"
+                return IGNORE_FILE, None, "ignore"
             elif choice == "5":
-                # Confirm deletion
+                # Confirm deletion and ask for reason
                 if Confirm.ask(
                     f"[red]Tem a certeza que quer eliminar '{invoice.file_name}'?[/red]",
                     default=False,
                 ):
-                    return DELETE_FILE
+                    if create_rules:
+                        condition, description = self._prompt_ignore_reason(invoice, "delete")
+                        return DELETE_FILE, condition, "delete"
+                    return DELETE_FILE, None, "delete"
                 # If not confirmed, show menu again
 
     def _show_extended_info(
@@ -734,16 +925,21 @@ class InvoiceProcessor:
         invoice: DownloadedInvoice,
         interactive: bool = True,
         move: bool = False,
-    ) -> ProcessedInvoice:
+        auto_action: Optional[tuple[str, str]] = None,
+        suppress_output: bool = False,
+    ) -> tuple[ProcessedInvoice, Optional[RuleCondition], Optional[str]]:
         """Process a single downloaded invoice.
 
         Args:
             invoice: Downloaded invoice to process.
             interactive: If True, prompt for unknown entities.
             move: If True, move file instead of copy.
+            auto_action: If provided, (action, rule_name) to apply automatically.
+            suppress_output: If True, don't print progress (for batch summary mode).
 
         Returns:
-            ProcessedInvoice with result.
+            Tuple of (ProcessedInvoice, rule_condition, action).
+            rule_condition and action are set when user creates ignore/delete rule.
         """
         try:
             # Extract PDF information
@@ -752,43 +948,129 @@ class InvoiceProcessor:
             # Get email body from invoice
             email_body = invoice.email_body
 
+            # Check for auto-action (from previously created rule in this session)
+            if auto_action:
+                action_value, rule_name = auto_action
+                if action_value == "delete":
+                    try:
+                        invoice.file_path.unlink()
+                        self._session_stats["auto_deleted"].append((invoice.file_name, rule_name))
+                        return ProcessedInvoice(
+                            original=invoice,
+                            success=True,
+                            error=f"Auto-eliminado: {rule_name}",
+                        ), None, None
+                    except Exception as e:
+                        self._session_stats["errors"].append((invoice.file_name, str(e)))
+                        return ProcessedInvoice(
+                            original=invoice,
+                            success=False,
+                            error=f"Erro ao auto-eliminar: {e}",
+                        ), None, None
+                else:  # ignore
+                    self._session_stats["auto_ignored"].append((invoice.file_name, rule_name))
+                    return ProcessedInvoice(
+                        original=invoice,
+                        success=False,
+                        error=f"Auto-ignorado: {rule_name}",
+                    ), None, None
+
+            # Check for existing ignore rules
+            should_ignore, action_value, rule_name = self.check_ignore_rules(
+                invoice, pdf_info, email_body
+            )
+            if should_ignore:
+                if action_value == "delete":
+                    try:
+                        invoice.file_path.unlink()
+                        self._session_stats["auto_deleted"].append((invoice.file_name, rule_name))
+                        return ProcessedInvoice(
+                            original=invoice,
+                            success=True,
+                            error=f"Auto-eliminado por regra: {rule_name}",
+                        ), None, None
+                    except Exception as e:
+                        self._session_stats["errors"].append((invoice.file_name, str(e)))
+                        return ProcessedInvoice(
+                            original=invoice,
+                            success=False,
+                            error=f"Erro ao auto-eliminar: {e}",
+                        ), None, None
+                else:  # ignore
+                    self._session_stats["auto_ignored"].append((invoice.file_name, rule_name))
+                    return ProcessedInvoice(
+                        original=invoice,
+                        success=False,
+                        error=f"Auto-ignorado por regra: {rule_name}",
+                    ), None, None
+
             # Try to find matching entity
             entity, match_reason = self.find_entity_for_invoice(invoice, pdf_info, email_body)
+            rule_condition = None
+            action = None
 
             if entity:
                 # Known entity - organize automatically
-                console.print(f"\n[green]✓[/green] {invoice.file_name}")
-                console.print(f"  [dim]{match_reason} → {entity.name}[/dim]")
+                if not suppress_output:
+                    console.print(f"\n[green]✓[/green] {invoice.file_name}")
+                    console.print(f"  [dim]{match_reason} → {entity.name}[/dim]")
 
             elif interactive:
                 # Show summary and prompt
-                console.print(f"\n[yellow]?[/yellow] {invoice.file_name}")
+                if not suppress_output:
+                    console.print(f"\n[yellow]?[/yellow] {invoice.file_name}")
                 self.show_invoice_summary(invoice, pdf_info)
-                entity = self.prompt_for_entity(invoice, pdf_info, email_body)
+                entity, rule_condition, action = self.prompt_for_entity(invoice, pdf_info, email_body)
 
             # Check if user chose to delete the file
             if isinstance(entity, _DeleteMarker):
                 # Delete the file permanently
                 try:
                     invoice.file_path.unlink()
-                    console.print(f"  [red]✗[/red] Ficheiro eliminado: {invoice.file_name}")
+                    self._session_stats["deleted"].append(
+                        (invoice.file_name, f"Manual: {rule_condition.pattern if rule_condition else 'individual'}")
+                    )
                     return ProcessedInvoice(
                         original=invoice,
-                        success=True,  # Treated as success since user chose this action
+                        success=True,
                         error="Ficheiro eliminado pelo utilizador",
-                    )
+                    ), rule_condition, action
                 except Exception as e:
-                    console.print(f"  [red]Erro ao eliminar ficheiro: {e}[/red]")
+                    self._session_stats["errors"].append((invoice.file_name, str(e)))
                     return ProcessedInvoice(
                         original=invoice,
                         success=False,
                         error=f"Erro ao eliminar: {e}",
-                    )
+                    ), None, None
+
+            # Check if user chose to ignore the file
+            if isinstance(entity, _IgnoreMarker):
+                self._session_stats["ignored"].append(
+                    (invoice.file_name, f"Manual: {rule_condition.pattern if rule_condition else 'individual'}")
+                )
+                # Add to pending queue
+                self.registry.add_to_pending({
+                    "file_path": str(invoice.file_path),
+                    "file_name": invoice.file_name,
+                    "detected_type": "fatura",
+                    "sender": invoice.sender,
+                    "subject": invoice.subject,
+                    "email_date": invoice.date.isoformat(),
+                    "amount": pdf_info.get("amount"),
+                    "nifs": pdf_info.get("nifs", []),
+                    "pending_reason": "Ignorado pelo utilizador",
+                })
+                return ProcessedInvoice(
+                    original=invoice,
+                    success=False,
+                    error="Ignorado pelo utilizador - adicionado a pendentes",
+                ), rule_condition, action
 
             if entity:
                 # Organize the file
                 dest_path = self.organize_invoice(invoice, entity, pdf_info, move=move)
-                console.print(f"  [green]→[/green] {dest_path.parent.name}/{dest_path.name}")
+                if not suppress_output:
+                    console.print(f"  [green]→[/green] {dest_path.parent.name}/{dest_path.name}")
 
                 # Record in registry
                 doc_record = DocumentRecord(
@@ -803,6 +1085,10 @@ class InvoiceProcessor:
                 )
                 self.registry.add_document(doc_record)
 
+                self._session_stats["organized"].append(
+                    (invoice.file_name, entity.name, str(dest_path))
+                )
+
                 return ProcessedInvoice(
                     original=invoice,
                     success=True,
@@ -811,7 +1097,7 @@ class InvoiceProcessor:
                     document_type=DocumentType.FATURA,
                     amount=pdf_info.get("amount"),
                     nif=pdf_info["nifs"][0] if pdf_info.get("nifs") else None,
-                )
+                ), None, None
             else:
                 # Add to pending queue
                 self.registry.add_to_pending({
@@ -826,19 +1112,100 @@ class InvoiceProcessor:
                     "pending_reason": "Entidade desconhecida",
                 })
 
+                self._session_stats["ignored"].append(
+                    (invoice.file_name, "Entidade desconhecida")
+                )
+
                 return ProcessedInvoice(
                     original=invoice,
                     success=False,
                     error="Entidade desconhecida - adicionado a pendentes",
-                )
+                ), None, None
 
         except Exception as e:
             logger.error(f"Error processing invoice {invoice.file_name}: {e}")
+            self._session_stats["errors"].append((invoice.file_name, str(e)))
             return ProcessedInvoice(
                 original=invoice,
                 success=False,
                 error=str(e),
-            )
+            ), None, None
+
+    def show_session_summary(self) -> None:
+        """Display comprehensive summary of the processing session."""
+        stats = self._session_stats
+
+        console.print(f"\n[bold]━━━ Resumo da Sessão ━━━[/bold]")
+
+        # Organized documents
+        if stats["organized"]:
+            console.print(f"\n[green]✓ Organizadas ({len(stats['organized'])}):[/green]")
+            for filename, entity, dest in stats["organized"]:
+                console.print(f"  • {filename[:40]} → {entity}")
+
+        # Auto-ignored by rules
+        if stats["auto_ignored"]:
+            console.print(f"\n[cyan]⊘ Auto-ignoradas por regra ({len(stats['auto_ignored'])}):[/cyan]")
+            # Group by rule name
+            by_rule = {}
+            for filename, rule in stats["auto_ignored"]:
+                by_rule.setdefault(rule, []).append(filename)
+            for rule, files in by_rule.items():
+                console.print(f"  [dim]{rule}:[/dim]")
+                for f in files[:3]:  # Show max 3 files per rule
+                    console.print(f"    • {f[:50]}")
+                if len(files) > 3:
+                    console.print(f"    [dim]... e mais {len(files) - 3} ficheiros[/dim]")
+
+        # Auto-deleted by rules
+        if stats["auto_deleted"]:
+            console.print(f"\n[red]✗ Auto-eliminadas por regra ({len(stats['auto_deleted'])}):[/red]")
+            by_rule = {}
+            for filename, rule in stats["auto_deleted"]:
+                by_rule.setdefault(rule, []).append(filename)
+            for rule, files in by_rule.items():
+                console.print(f"  [dim]{rule}:[/dim]")
+                for f in files[:3]:
+                    console.print(f"    • {f[:50]}")
+                if len(files) > 3:
+                    console.print(f"    [dim]... e mais {len(files) - 3} ficheiros[/dim]")
+
+        # Manually ignored
+        if stats["ignored"]:
+            console.print(f"\n[yellow]○ Ignoradas/Pendentes ({len(stats['ignored'])}):[/yellow]")
+            for filename, reason in stats["ignored"][:5]:
+                console.print(f"  • {filename[:40]} [{reason[:30]}]")
+            if len(stats["ignored"]) > 5:
+                console.print(f"  [dim]... e mais {len(stats['ignored']) - 5} ficheiros[/dim]")
+
+        # Manually deleted
+        if stats["deleted"]:
+            console.print(f"\n[red]✗ Eliminadas ({len(stats['deleted'])}):[/red]")
+            for filename, reason in stats["deleted"]:
+                console.print(f"  • {filename[:40]}")
+
+        # Errors
+        if stats["errors"]:
+            console.print(f"\n[red bold]⚠ Erros ({len(stats['errors'])}):[/red bold]")
+            for filename, error in stats["errors"][:5]:
+                console.print(f"  • {filename[:30]}: {error[:40]}")
+            if len(stats["errors"]) > 5:
+                console.print(f"  [dim]... e mais {len(stats['errors']) - 5} erros[/dim]")
+
+        # Final counts
+        total = (
+            len(stats["organized"]) +
+            len(stats["auto_ignored"]) +
+            len(stats["auto_deleted"]) +
+            len(stats["ignored"]) +
+            len(stats["deleted"]) +
+            len(stats["errors"])
+        )
+        console.print(f"\n[bold]Total processado: {total}[/bold]")
+
+        pending_count = len(stats["ignored"]) + len(stats["auto_ignored"])
+        if pending_count > 0:
+            console.print(f"[dim]Use 'bank-extractor pendentes' para ver documentos pendentes[/dim]")
 
     def process_invoices(
         self,
@@ -860,24 +1227,67 @@ class InvoiceProcessor:
             console.print("[yellow]Nenhuma fatura para processar.[/yellow]")
             return []
 
-        console.print(f"\n[bold]A processar {len(invoices)} faturas...[/bold]")
+        # Reset session stats
+        self.reset_session_stats()
+
+        # Suppress logging during interactive processing
+        if interactive:
+            set_logging_suppressed(True)
+
+        console.print(f"\n[bold]A processar {len(invoices)} faturas...[/bold]\n")
 
         results = []
-        for invoice in invoices:
-            result = self.process_invoice(invoice, interactive=interactive, move=move)
-            results.append(result)
+        auto_actions = {}  # Maps invoice index to (action, rule_name)
 
-        # Summary
-        organized = sum(1 for r in results if r.success and r.destination_path)
-        deleted = sum(1 for r in results if r.success and r.error and "eliminado" in r.error.lower())
-        pending = sum(1 for r in results if not r.success)
+        try:
+            i = 0
+            while i < len(invoices):
+                invoice = invoices[i]
 
-        console.print(f"\n[bold]Resumo:[/bold]")
-        console.print(f"  [green]Organizadas: {organized}[/green]")
-        if deleted > 0:
-            console.print(f"  [red]Eliminadas: {deleted}[/red]")
-        if pending > 0:
-            console.print(f"  [yellow]Pendentes: {pending}[/yellow]")
-            console.print(f"  [dim]Use 'bank-extractor pendentes' para ver pendentes[/dim]")
+                # Check if this invoice has an auto-action from a previously created rule
+                auto_action = auto_actions.get(i)
+
+                result, rule_condition, action = self.process_invoice(
+                    invoice,
+                    interactive=interactive,
+                    move=move,
+                    auto_action=auto_action,
+                    suppress_output=bool(auto_action),  # Don't show output for auto-processed
+                )
+                results.append(result)
+
+                # If user created an ignore/delete rule, create it and apply to remaining
+                if rule_condition and action:
+                    # Create the rule
+                    rule = self._create_ignore_rule(
+                        rule_condition,
+                        action,
+                        rule_condition.pattern,
+                    )
+                    console.print(
+                        f"\n[dim]Regra criada: '{rule.name}' - "
+                        f"a verificar {len(invoices) - i - 1} documentos restantes...[/dim]"
+                    )
+
+                    # Apply to remaining invoices
+                    new_auto_actions = self.apply_ignore_rules_to_queue(invoices, i)
+                    auto_actions.update(new_auto_actions)
+
+                    if new_auto_actions:
+                        console.print(
+                            f"[cyan]→ {len(new_auto_actions)} documentos serão "
+                            f"{'eliminados' if action == 'delete' else 'ignorados'} "
+                            f"automaticamente[/cyan]\n"
+                        )
+
+                i += 1
+
+        finally:
+            # Always re-enable logging
+            if interactive:
+                set_logging_suppressed(False)
+
+        # Show comprehensive summary at the end
+        self.show_session_summary()
 
         return results

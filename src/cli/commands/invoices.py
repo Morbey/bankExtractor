@@ -649,11 +649,16 @@ def _process_invoices_streaming(
     """
     from queue import Empty
     from src.modules.invoices import InvoiceProcessor
+    from src.core.logger import set_logging_suppressed
 
     processor = InvoiceProcessor()
+    processor.reset_session_stats()
 
     console.print(f"\n[bold cyan]Modo paralelo: a descarregar e processar simultaneamente...[/bold cyan]")
     console.print("[dim]Faturas serão apresentadas à medida que são descarregadas.[/dim]\n")
+
+    # Suppress logging during interactive processing
+    set_logging_suppressed(True)
 
     # Shared state for progress updates (thread-safe via simple assignment)
     progress_status = {"message": "A iniciar...", "stage": "connect", "current": 0, "total": 0}
@@ -673,108 +678,139 @@ def _process_invoices_streaming(
         progress_callback=streaming_progress,
     )
 
-    # Track statistics
-    processed = 0
-    organized = 0
-    deleted = 0
-    pending = 0
+    # Track invoices for rule application
+    processed_count = 0
+    pending_invoices = []  # Store invoices waiting to be processed
+    auto_actions = {}  # Maps invoice index to (action, rule_name)
     download_complete = False
 
     # Use a status line that updates in place
     from rich.status import Status
 
-    with Status("[yellow]A aguardar...[/yellow]", console=console) as status:
-        while True:
-            try:
-                # Get next invoice with short timeout
-                item = queue.get(timeout=0.3)
+    try:
+        with Status("[yellow]A aguardar...[/yellow]", console=console) as status:
+            while True:
+                try:
+                    # Get next invoice with short timeout
+                    item = queue.get(timeout=0.3)
 
-                if item is _DOWNLOAD_COMPLETE:
-                    download_complete = True
-                    break
+                    if item is _DOWNLOAD_COMPLETE:
+                        download_complete = True
+                        break
 
-                # Stop status spinner while processing
-                status.stop()
+                    # Store the invoice
+                    pending_invoices.append(item)
 
-                # Process this invoice immediately
-                invoice = item
-                processed += 1
-
-                console.print(f"\n[cyan]━━━ Fatura {processed} ━━━[/cyan]")
-
-                result = processor.process_invoice(invoice, interactive=True, move=move)
-
-                if result.success:
-                    if result.destination_path:
-                        organized += 1
-                    elif result.error and "eliminado" in result.error.lower():
-                        deleted += 1
-                else:
-                    pending += 1
-
-                # Resume status spinner
-                status.start()
-
-            except Empty:
-                # Update status bar with current progress
-                stage = progress_status["stage"]
-                msg = progress_status["message"]
-                current = progress_status["current"]
-                total = progress_status["total"]
-
-                if stage == "connect":
-                    status.update(f"[cyan]⟳ {msg}[/cyan]")
-                elif stage == "fetch":
-                    if total > 0:
-                        status.update(f"[yellow]⟳ Email {current}/{total} | Faturas: {processed}[/yellow]")
-                    else:
-                        status.update(f"[yellow]⟳ {msg}[/yellow]")
-                elif stage == "download":
-                    status.update(f"[green]⟳ {msg} | Total: {processed}[/green]")
-                else:
-                    status.update(f"[blue]⟳ {msg}[/blue]")
-
-                # Check if thread is still alive
-                if not thread.is_alive():
-                    # Thread finished, drain remaining items
+                    # Stop status spinner while processing
                     status.stop()
-                    while True:
-                        try:
-                            item = queue.get_nowait()
-                            if item is _DOWNLOAD_COMPLETE:
-                                download_complete = True
+
+                    # Process this invoice
+                    invoice = item
+                    invoice_idx = len(pending_invoices) - 1
+
+                    # Check if this invoice has an auto-action from a previously created rule
+                    auto_action = auto_actions.get(invoice_idx)
+
+                    if not auto_action:
+                        console.print(f"\n[cyan]━━━ Fatura {invoice_idx + 1} ━━━[/cyan]")
+
+                    result, rule_condition, action = processor.process_invoice(
+                        invoice,
+                        interactive=True,
+                        move=move,
+                        auto_action=auto_action,
+                        suppress_output=bool(auto_action),
+                    )
+                    processed_count += 1
+
+                    # If user created an ignore/delete rule, create it and apply to pending
+                    if rule_condition and action:
+                        rule = processor._create_ignore_rule(
+                            rule_condition,
+                            action,
+                            rule_condition.pattern,
+                        )
+                        console.print(
+                            f"\n[dim]Regra criada: '{rule.name}' - "
+                            f"será aplicada a documentos futuros desta sessão[/dim]"
+                        )
+
+                    # Resume status spinner
+                    status.start()
+
+                except Empty:
+                    # Update status bar with current progress
+                    stage = progress_status["stage"]
+                    msg = progress_status["message"]
+                    current = progress_status["current"]
+                    total = progress_status["total"]
+
+                    if stage == "connect":
+                        status.update(f"[cyan]⟳ {msg}[/cyan]")
+                    elif stage == "fetch":
+                        if total > 0:
+                            status.update(f"[yellow]⟳ Email {current}/{total} | Processadas: {processed_count}[/yellow]")
+                        else:
+                            status.update(f"[yellow]⟳ {msg}[/yellow]")
+                    elif stage == "download":
+                        status.update(f"[green]⟳ {msg} | Total: {processed_count}[/green]")
+                    else:
+                        status.update(f"[blue]⟳ {msg}[/blue]")
+
+                    # Check if thread is still alive
+                    if not thread.is_alive():
+                        # Thread finished, drain remaining items
+                        status.stop()
+                        while True:
+                            try:
+                                item = queue.get_nowait()
+                                if item is _DOWNLOAD_COMPLETE:
+                                    download_complete = True
+                                    break
+
+                                # Store and process remaining
+                                pending_invoices.append(item)
+                                invoice = item
+                                invoice_idx = len(pending_invoices) - 1
+                                auto_action = auto_actions.get(invoice_idx)
+
+                                if not auto_action:
+                                    console.print(f"\n[cyan]━━━ Fatura {invoice_idx + 1} ━━━[/cyan]")
+
+                                result, rule_condition, action = processor.process_invoice(
+                                    invoice,
+                                    interactive=True,
+                                    move=move,
+                                    auto_action=auto_action,
+                                    suppress_output=bool(auto_action),
+                                )
+                                processed_count += 1
+
+                                # If user created an ignore/delete rule, create it
+                                if rule_condition and action:
+                                    rule = processor._create_ignore_rule(
+                                        rule_condition,
+                                        action,
+                                        rule_condition.pattern,
+                                    )
+                                    console.print(f"\n[dim]Regra criada: '{rule.name}'[/dim]")
+
+                            except Empty:
                                 break
-                            # Process remaining
-                            invoice = item
-                            processed += 1
-                            console.print(f"\n[cyan]━━━ Fatura {processed} ━━━[/cyan]")
-                            result = processor.process_invoice(invoice, interactive=True, move=move)
-                            if result.success:
-                                if result.destination_path:
-                                    organized += 1
-                                elif result.error and "eliminado" in result.error.lower():
-                                    deleted += 1
-                            else:
-                                pending += 1
-                        except Empty:
-                            break
-                    break
-                # Otherwise, just continue waiting
-                continue
+                        break
+                    continue
 
-    # Wait for thread to fully complete
-    thread.join(timeout=2.0)
+        # Wait for thread to fully complete
+        thread.join(timeout=2.0)
 
-    # Final summary
-    console.print(f"\n[bold]━━━ Resumo Final ━━━[/bold]")
-    console.print(f"  [green]Organizadas: {organized}[/green]")
-    if deleted > 0:
-        console.print(f"  [red]Eliminadas: {deleted}[/red]")
-    if pending > 0:
-        console.print(f"  [yellow]Pendentes: {pending}[/yellow]")
-        console.print(f"  [dim]Use 'bank-extractor pendentes' para ver pendentes[/dim]")
+    finally:
+        # Always re-enable logging
+        set_logging_suppressed(False)
 
-    if processed == 0:
+    # Show comprehensive session summary (after all user interaction is done)
+    processor.show_session_summary()
+
+    if processed_count == 0:
         console.print("[yellow]Nenhuma fatura encontrada.[/yellow]")
 
     # Show remaining files in temp folder
