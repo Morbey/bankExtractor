@@ -8,6 +8,7 @@ from typing import Optional
 
 from src.core.categories import InvoiceCategory, InvoiceCategorizer
 from src.core.config import settings
+from src.core.iban_manager import get_iban_manager
 from src.core.logger import get_logger
 from src.modules.invoices.pdf_parser import InvoiceMetadata, PDFInvoiceParser
 
@@ -58,18 +59,20 @@ class InvoiceOrganizer:
     ) -> Path:
         """Get the folder path for a category.
 
+        Structure: base_dir/ano/categoria/ (e.g., data/faturas/2026/agua/)
+
         Args:
             category: Invoice category.
-            year: Year for subfolder (if organize_by_year is True).
+            year: Year for folder (if organize_by_year is True).
 
         Returns:
             Path to category folder.
         """
-        folder = self.base_dir / self.categorizer.get_folder_name(category)
-
-        # Add year subfolder if enabled
+        # Structure: ano/categoria (e.g., 2026/agua)
         if self.organize_by_year and year:
-            folder = folder / str(year)
+            folder = self.base_dir / str(year) / self.categorizer.get_folder_name(category)
+        else:
+            folder = self.base_dir / self.categorizer.get_folder_name(category)
 
         folder.mkdir(parents=True, exist_ok=True)
         return folder
@@ -145,6 +148,15 @@ class InvoiceOrganizer:
 
             # Get destination folder (with year subfolder if enabled)
             dest_folder = self.get_category_folder(category, year=invoice_year)
+
+            # Special handling for bank documents - organize by IBAN
+            if category == InvoiceCategory.BANCARIO and metadata.raw_text:
+                iban_manager = get_iban_manager()
+                iban = iban_manager.extract_iban_from_text(metadata.raw_text)
+                if iban:
+                    account_folder = iban_manager.get_or_prompt_folder(iban)
+                    dest_folder = dest_folder / account_folder
+                    dest_folder.mkdir(parents=True, exist_ok=True)
 
             # Build destination filename
             if not add_date_prefix:
@@ -241,12 +253,23 @@ class InvoiceOrganizer:
         stats = {}
 
         for category in InvoiceCategory:
-            folder = self.base_dir / self.categorizer.get_folder_name(category)
-            if folder.exists():
-                # Count files in category folder and all year subfolders
-                count = len(list(folder.rglob("*.pdf")))
-                if count > 0:
-                    stats[category] = count
+            count = 0
+            cat_name = self.categorizer.get_folder_name(category)
+
+            # Search in all year folders: base_dir/*/categoria/
+            for year_folder in self.base_dir.iterdir():
+                if year_folder.is_dir() and year_folder.name.isdigit():
+                    cat_folder = year_folder / cat_name
+                    if cat_folder.exists():
+                        count += len(list(cat_folder.glob("*.pdf")))
+
+            # Also check base_dir/categoria/ (no year)
+            direct_folder = self.base_dir / cat_name
+            if direct_folder.exists():
+                count += len(list(direct_folder.glob("*.pdf")))
+
+            if count > 0:
+                stats[category] = count
 
         return stats
 
@@ -264,18 +287,28 @@ class InvoiceOrganizer:
         Returns:
             List of file paths.
         """
-        base_folder = self.base_dir / self.categorizer.get_folder_name(category)
+        cat_name = self.categorizer.get_folder_name(category)
+        files = []
 
         if year:
-            folder = base_folder / str(year)
+            # Specific year: base_dir/ano/categoria/
+            folder = self.base_dir / str(year) / cat_name
             if folder.exists():
-                return sorted(folder.glob("*.pdf"))
-            return []
+                files = list(folder.glob("*.pdf"))
         else:
-            # Return all files including those in year subfolders
-            if base_folder.exists():
-                return sorted(base_folder.rglob("*.pdf"))
-            return []
+            # All years: search in base_dir/*/categoria/
+            for year_folder in self.base_dir.iterdir():
+                if year_folder.is_dir() and year_folder.name.isdigit():
+                    cat_folder = year_folder / cat_name
+                    if cat_folder.exists():
+                        files.extend(cat_folder.glob("*.pdf"))
+
+            # Also check base_dir/categoria/ (no year)
+            direct_folder = self.base_dir / cat_name
+            if direct_folder.exists():
+                files.extend(direct_folder.glob("*.pdf"))
+
+        return sorted(files)
 
     def recategorize_file(
         self,
