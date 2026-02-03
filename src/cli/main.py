@@ -1,16 +1,22 @@
 """Bank Extractor CLI - Main entry point."""
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from src import __version__
 from src.core import CredentialManager, settings
+from src.core.categories import InvoiceCategory, InvoiceCategorizer
 from src.modules.banks import BancoCTTBank, CGDEmpresasBank
+from src.modules.invoices import EmailClient, PDFInvoiceParser
+from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer
 from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader
 from src.modules.organizer import DocumentIndexer, DocumentType
 from src.modules.reporter import (
@@ -43,6 +49,11 @@ BANKS = {
 def parse_date(date_str: str) -> date:
     """Parse date string in DD-MM-YYYY format."""
     return datetime.strptime(date_str, "%d-%m-%Y").date()
+
+
+# ============================================================================
+# EXTRATOS (Bank Statements)
+# ============================================================================
 
 
 @app.command()
@@ -114,6 +125,364 @@ def extrair(
         console.print("\n[yellow]Nenhum extrato extraído.[/yellow]")
 
 
+# ============================================================================
+# FATURAS (Invoices)
+# ============================================================================
+
+
+@app.command()
+def faturas(
+    acao: str = typer.Argument(
+        ...,
+        help="Ação: email, organizar, listar, stats",
+    ),
+    pasta: Optional[str] = typer.Option(
+        None,
+        "--pasta", "-p",
+        help="Pasta de origem para organizar ficheiros.",
+    ),
+    mover: bool = typer.Option(
+        False,
+        "--mover", "-m",
+        help="Mover ficheiros em vez de copiar.",
+    ),
+    categoria: Optional[str] = typer.Option(
+        None,
+        "--categoria", "-c",
+        help="Filtrar por categoria.",
+    ),
+):
+    """Gerir faturas - download de email e organização."""
+    console.print(Panel.fit(
+        f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
+        "Gestão de Faturas",
+        border_style="green",
+    ))
+
+    acao_lower = acao.lower()
+
+    if acao_lower == "email":
+        _faturas_email()
+    elif acao_lower == "organizar":
+        _faturas_organizar(pasta, mover)
+    elif acao_lower == "listar":
+        _faturas_listar(categoria)
+    elif acao_lower == "stats":
+        _faturas_stats()
+    elif acao_lower == "categorias":
+        _faturas_categorias()
+    else:
+        console.print(f"[red]Ação desconhecida: {acao}[/red]")
+        console.print("Ações disponíveis: email, organizar, listar, stats, categorias")
+        raise typer.Exit(1)
+
+
+def _faturas_email():
+    """Download invoices from email."""
+    console.print("\n[bold cyan]Download de faturas por email[/bold cyan]\n")
+
+    # Get email credentials
+    server = CredentialManager.get_or_prompt("email", "server", "Servidor IMAP (ex: imap.gmail.com)")
+    username = CredentialManager.get_or_prompt("email", "username", "Email")
+    password = CredentialManager.get_or_prompt("email", "password", "Password", password=True)
+
+    # Date range
+    console.print("\n[dim]Deixe em branco para pesquisar os últimos 30 dias[/dim]")
+    inicio_str = Prompt.ask("Data início (DD-MM-YYYY)", default="")
+    fim_str = Prompt.ask("Data fim (DD-MM-YYYY)", default="")
+
+    start_date = parse_date(inicio_str) if inicio_str else None
+    end_date = parse_date(fim_str) if fim_str else None
+
+    # If no dates, default to last 30 days
+    if not start_date:
+        from datetime import timedelta
+        start_date = date.today() - timedelta(days=30)
+
+    console.print(f"\n[dim]Pesquisando desde {start_date}...[/dim]\n")
+
+    try:
+        with EmailClient(server, username, password) as client:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Pesquisando emails...", total=None)
+
+                invoices = client.search_invoices(
+                    since_date=start_date,
+                    before_date=end_date,
+                )
+
+                progress.update(task, description=f"Encontradas {len(invoices)} faturas")
+
+            if not invoices:
+                console.print("[yellow]Nenhuma fatura encontrada.[/yellow]")
+                return
+
+            # Display found invoices
+            table = Table(title="Faturas Encontradas")
+            table.add_column("#", style="dim")
+            table.add_column("Data", style="cyan")
+            table.add_column("Remetente", style="green")
+            table.add_column("Assunto", style="white", max_width=40)
+            table.add_column("PDFs", style="yellow")
+
+            for i, inv in enumerate(invoices, 1):
+                table.add_row(
+                    str(i),
+                    inv.date.strftime("%Y-%m-%d"),
+                    inv.sender[:30] + "..." if len(inv.sender) > 30 else inv.sender,
+                    inv.subject[:40] + "..." if len(inv.subject) > 40 else inv.subject,
+                    str(len(inv.pdf_attachments)),
+                )
+
+            console.print(table)
+
+            # Confirm download
+            if not Confirm.ask("\nDescarregar e organizar estas faturas?"):
+                return
+
+            # Download and organize
+            organizer = InvoiceOrganizer()
+            db = InvoiceDatabase()
+            downloaded = 0
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Processando...", total=len(invoices))
+
+                for inv in invoices:
+                    # Save attachments to temp location
+                    temp_dir = settings.data_dir / "temp"
+                    saved_files = client.save_attachments(inv, temp_dir)
+
+                    # Organize each file
+                    for file_path in saved_files:
+                        result = organizer.organize_file(
+                            file_path,
+                            sender=inv.sender,
+                            subject=inv.subject,
+                            move=True,
+                        )
+
+                        if result.success and result.metadata:
+                            # Add to database
+                            db.add_invoice(
+                                file_path=result.destination_path,
+                                category=result.category,
+                                nif_emitente=result.metadata.nif_emitente,
+                                invoice_date=result.metadata.invoice_date,
+                                total_amount=result.metadata.total_amount,
+                                email_sender=inv.sender,
+                                email_subject=inv.subject,
+                                email_date=inv.date,
+                                email_message_id=inv.message_id,
+                            )
+                            downloaded += 1
+
+                    progress.advance(task)
+
+            console.print(f"\n[green]✓ {downloaded} faturas descarregadas e organizadas.[/green]")
+
+    except Exception as e:
+        console.print(f"[red]Erro: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _faturas_organizar(pasta: Optional[str], mover: bool):
+    """Organize invoice files from a directory."""
+    source_dir = Path(pasta) if pasta else settings.faturas_dir
+
+    if not source_dir.exists():
+        console.print(f"[red]Pasta não encontrada: {source_dir}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[cyan]Organizando faturas em: {source_dir}[/cyan]\n")
+
+    organizer = InvoiceOrganizer()
+    db = InvoiceDatabase()
+
+    # Find PDF files
+    pdf_files = list(source_dir.glob("*.pdf"))
+
+    if not pdf_files:
+        console.print("[yellow]Nenhum ficheiro PDF encontrado na raiz da pasta.[/yellow]")
+        console.print("[dim]Os ficheiros já organizados em subpastas são ignorados.[/dim]")
+        return
+
+    console.print(f"Encontrados {len(pdf_files)} ficheiros PDF\n")
+
+    if not Confirm.ask(f"{'Mover' if mover else 'Copiar'} e organizar estes ficheiros?"):
+        return
+
+    # Process files
+    results = organizer.organize_directory(source_dir, move=mover)
+
+    # Summary by category
+    summary: dict[InvoiceCategory, int] = {}
+    errors = []
+
+    for result in results:
+        if result.success:
+            summary[result.category] = summary.get(result.category, 0) + 1
+
+            # Add to database
+            if result.metadata:
+                if not db.invoice_exists(result.destination_path):
+                    db.add_invoice(
+                        file_path=result.destination_path,
+                        category=result.category,
+                        nif_emitente=result.metadata.nif_emitente,
+                        invoice_date=result.metadata.invoice_date,
+                        total_amount=result.metadata.total_amount,
+                    )
+        else:
+            errors.append(result)
+
+    # Display summary
+    if summary:
+        table = Table(title="Resumo da Organização")
+        table.add_column("Categoria", style="cyan")
+        table.add_column("Ficheiros", style="green", justify="right")
+
+        for cat, count in sorted(summary.items(), key=lambda x: x[1], reverse=True):
+            table.add_row(cat.value, str(count))
+
+        table.add_row("─" * 15, "─" * 5)
+        table.add_row("[bold]Total[/bold]", f"[bold]{sum(summary.values())}[/bold]")
+
+        console.print(table)
+
+    if errors:
+        console.print(f"\n[red]{len(errors)} ficheiros com erros.[/red]")
+
+
+def _faturas_listar(categoria: Optional[str]):
+    """List organized invoices."""
+    organizer = InvoiceOrganizer()
+
+    if categoria:
+        try:
+            cat = InvoiceCategory(categoria.lower())
+            files = organizer.list_category_files(cat)
+            console.print(f"\n[cyan]Faturas em '{cat.value}':[/cyan]\n")
+
+            for f in files:
+                console.print(f"  {f.name}")
+
+            console.print(f"\n[dim]Total: {len(files)} ficheiros[/dim]")
+
+        except ValueError:
+            console.print(f"[red]Categoria desconhecida: {categoria}[/red]")
+            console.print(f"Categorias: {', '.join(c.value for c in InvoiceCategory)}")
+    else:
+        # Show all categories with counts
+        stats = organizer.get_category_stats()
+
+        if not stats:
+            console.print("[yellow]Nenhuma fatura organizada ainda.[/yellow]")
+            return
+
+        table = Table(title="Faturas por Categoria")
+        table.add_column("Categoria", style="cyan")
+        table.add_column("Ficheiros", style="green", justify="right")
+        table.add_column("Pasta", style="dim")
+
+        total = 0
+        for cat, count in sorted(stats.items(), key=lambda x: x[1], reverse=True):
+            folder = settings.faturas_dir / cat.value
+            table.add_row(cat.value, str(count), str(folder))
+            total += count
+
+        table.add_row("─" * 15, "─" * 5, "")
+        table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]", "")
+
+        console.print(table)
+
+
+def _faturas_stats():
+    """Show invoice statistics from database."""
+    db = InvoiceDatabase()
+    stats = db.get_statistics()
+
+    console.print("\n[bold cyan]Estatísticas de Faturas[/bold cyan]\n")
+
+    # General stats
+    table = Table(title="Resumo Geral")
+    table.add_column("Métrica", style="cyan")
+    table.add_column("Valor", style="green", justify="right")
+
+    table.add_row("Total de faturas", str(stats["total_invoices"]))
+    table.add_row("Valor total", f"€ {stats['total_amount']:.2f}")
+    table.add_row("Pagas", str(stats["paid_count"]))
+    table.add_row("Por pagar", str(stats["unpaid_count"]))
+
+    console.print(table)
+
+    # By category
+    if stats["by_category"]:
+        console.print()
+        cat_table = Table(title="Por Categoria")
+        cat_table.add_column("Categoria", style="cyan")
+        cat_table.add_column("Quantidade", style="green", justify="right")
+
+        for cat_name, count in sorted(
+            stats["by_category"].items(), key=lambda x: x[1], reverse=True
+        ):
+            cat_table.add_row(cat_name, str(count))
+
+        console.print(cat_table)
+
+
+def _faturas_categorias():
+    """Show available categories."""
+    console.print("\n[bold cyan]Categorias Disponíveis[/bold cyan]\n")
+
+    categorizer = InvoiceCategorizer()
+
+    table = Table()
+    table.add_column("Categoria", style="cyan")
+    table.add_column("Pasta", style="green")
+    table.add_column("Exemplos de Fornecedores", style="dim")
+
+    # Map categories to example providers
+    examples = {
+        InvoiceCategory.COMUNICACOES: "Vodafone, NOS, MEO",
+        InvoiceCategory.VIA_VERDE: "Via Verde, Brisa",
+        InvoiceCategory.ENERGIA: "EDP, Galp, Endesa",
+        InvoiceCategory.AGUA: "EPAL, Águas de Portugal",
+        InvoiceCategory.COMBUSTIVEL: "Galp, BP, Repsol",
+        InvoiceCategory.SEGUROS: "Fidelidade, Allianz",
+        InvoiceCategory.SAUDE: "Farmácias, Clínicas",
+        InvoiceCategory.SOFTWARE: "Microsoft, Google, Adobe",
+        InvoiceCategory.MATERIAL_ESCRITORIO: "Staples, Note!",
+        InvoiceCategory.ALIMENTACAO: "Continente, Pingo Doce",
+        InvoiceCategory.TRANSPORTES: "Uber, CP, Metro",
+        InvoiceCategory.ALOJAMENTO: "Booking, Airbnb",
+        InvoiceCategory.SERVICOS: "Serviços diversos",
+        InvoiceCategory.OUTROS: "Não categorizados",
+    }
+
+    for cat in InvoiceCategory:
+        table.add_row(
+            cat.value,
+            str(settings.faturas_dir / cat.value),
+            examples.get(cat, ""),
+        )
+
+    console.print(table)
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+
 @app.command()
 def config():
     """Mostrar configuração atual."""
@@ -138,7 +507,7 @@ def config():
 
 @app.command()
 def credenciais(
-    banco: str = typer.Argument(..., help="Banco: cgd, ctt"),
+    servico: str = typer.Argument(..., help="Serviço: cgd, ctt, email"),
     limpar: bool = typer.Option(
         False,
         "--limpar", "-l",
@@ -146,19 +515,36 @@ def credenciais(
     ),
 ):
     """Gerir credenciais guardadas."""
-    if banco.lower() not in BANKS:
-        console.print(f"[red]Banco desconhecido: {banco}[/red]")
-        raise typer.Exit(1)
+    servico_lower = servico.lower()
 
     if limpar:
-        CredentialManager.clear_bank_credentials(banco.lower())
+        if servico_lower == "email":
+            CredentialManager.delete_credential("email", "server")
+            CredentialManager.delete_credential("email", "username")
+            CredentialManager.delete_credential("email", "password")
+            console.print("[green]Credenciais de email removidas.[/green]")
+        elif servico_lower in BANKS:
+            CredentialManager.clear_bank_credentials(servico_lower)
+        else:
+            console.print(f"[red]Serviço desconhecido: {servico}[/red]")
+            raise typer.Exit(1)
     else:
-        console.print(f"[cyan]Credenciais para {banco.upper()}:[/cyan]")
-        # Just trigger the prompt to set credentials
-        bank_class = BANKS[banco.lower()]
-        bank = bank_class()
-        bank.get_credentials()
-        console.print("[green]Credenciais configuradas.[/green]")
+        if servico_lower == "email":
+            console.print("[cyan]Credenciais de email:[/cyan]")
+            CredentialManager.get_or_prompt("email", "server", "Servidor IMAP")
+            CredentialManager.get_or_prompt("email", "username", "Email")
+            CredentialManager.get_or_prompt("email", "password", "Password", password=True)
+            console.print("[green]Credenciais de email configuradas.[/green]")
+        elif servico_lower in BANKS:
+            console.print(f"[cyan]Credenciais para {servico_lower.upper()}:[/cyan]")
+            bank_class = BANKS[servico_lower]
+            bank = bank_class()
+            bank.get_credentials()
+            console.print("[green]Credenciais configuradas.[/green]")
+        else:
+            console.print(f"[red]Serviço desconhecido: {servico}[/red]")
+            console.print(f"Serviços disponíveis: {', '.join(BANKS.keys())}, email")
+            raise typer.Exit(1)
 
 
 @app.command()
