@@ -32,6 +32,7 @@ class InvoiceOrganizer:
         base_dir: Optional[Path] = None,
         categorizer: Optional[InvoiceCategorizer] = None,
         pdf_parser: Optional[PDFInvoiceParser] = None,
+        organize_by_year: bool = True,
     ):
         """Initialize organizer.
 
@@ -39,25 +40,37 @@ class InvoiceOrganizer:
             base_dir: Base directory for organized invoices (default: data/faturas)
             categorizer: Custom categorizer (uses default if not provided)
             pdf_parser: PDF parser instance (creates new if not provided)
+            organize_by_year: If True, creates year subfolders within categories
         """
         self.base_dir = base_dir or settings.data_dir / "faturas"
         self.categorizer = categorizer or InvoiceCategorizer()
         self.pdf_parser = pdf_parser or PDFInvoiceParser()
+        self.organize_by_year = organize_by_year
         self.logger = get_logger(__name__)
 
         # Ensure base directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_category_folder(self, category: InvoiceCategory) -> Path:
+    def get_category_folder(
+        self,
+        category: InvoiceCategory,
+        year: Optional[int] = None,
+    ) -> Path:
         """Get the folder path for a category.
 
         Args:
             category: Invoice category.
+            year: Year for subfolder (if organize_by_year is True).
 
         Returns:
             Path to category folder.
         """
         folder = self.base_dir / self.categorizer.get_folder_name(category)
+
+        # Add year subfolder if enabled
+        if self.organize_by_year and year:
+            folder = folder / str(year)
+
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
@@ -122,18 +135,24 @@ class InvoiceOrganizer:
             # Categorize the file
             category, metadata = self.categorize_file(file_path, sender, subject)
 
-            # Get destination folder
-            dest_folder = self.get_category_folder(category)
-
-            # Build destination filename
-            if add_date_prefix and metadata.invoice_date:
+            # Determine the year for organization
+            if metadata.invoice_date:
+                invoice_year = metadata.invoice_date.year
                 date_prefix = metadata.invoice_date.strftime("%Y%m%d")
             else:
+                invoice_year = datetime.now().year
                 date_prefix = datetime.now().strftime("%Y%m%d")
+
+            # Get destination folder (with year subfolder if enabled)
+            dest_folder = self.get_category_folder(category, year=invoice_year)
+
+            # Build destination filename
+            if not add_date_prefix:
+                date_prefix = ""
 
             # Clean filename
             original_name = file_path.name
-            if not original_name.startswith(date_prefix):
+            if date_prefix and not original_name.startswith(date_prefix):
                 dest_filename = f"{date_prefix}_{original_name}"
             else:
                 dest_filename = original_name
@@ -224,28 +243,45 @@ class InvoiceOrganizer:
         for category in InvoiceCategory:
             folder = self.base_dir / self.categorizer.get_folder_name(category)
             if folder.exists():
-                count = len(list(folder.glob("*.pdf")))
+                # Count files in category folder and all year subfolders
+                count = len(list(folder.rglob("*.pdf")))
                 if count > 0:
                     stats[category] = count
 
         return stats
 
-    def list_category_files(self, category: InvoiceCategory) -> list[Path]:
+    def list_category_files(
+        self,
+        category: InvoiceCategory,
+        year: Optional[int] = None,
+    ) -> list[Path]:
         """List all files in a category folder.
 
         Args:
             category: The category to list.
+            year: Optional year to filter by.
 
         Returns:
             List of file paths.
         """
-        folder = self.get_category_folder(category)
-        return sorted(folder.glob("*.pdf"))
+        base_folder = self.base_dir / self.categorizer.get_folder_name(category)
+
+        if year:
+            folder = base_folder / str(year)
+            if folder.exists():
+                return sorted(folder.glob("*.pdf"))
+            return []
+        else:
+            # Return all files including those in year subfolders
+            if base_folder.exists():
+                return sorted(base_folder.rglob("*.pdf"))
+            return []
 
     def recategorize_file(
         self,
         file_path: Path,
         new_category: InvoiceCategory,
+        year: Optional[int] = None,
         move: bool = True,
     ) -> OrganizedInvoice:
         """Manually recategorize a file to a different category.
@@ -253,6 +289,7 @@ class InvoiceOrganizer:
         Args:
             file_path: Path to the file to recategorize.
             new_category: New category for the file.
+            year: Year for organization (if organize_by_year is enabled).
             move: If True, moves file. If False, copies.
 
         Returns:
@@ -268,7 +305,16 @@ class InvoiceOrganizer:
                     error="Ficheiro não encontrado",
                 )
 
-            dest_folder = self.get_category_folder(new_category)
+            # Try to extract year from filename if not provided
+            if not year and self.organize_by_year:
+                # Try to get year from filename (YYYYMMDD_ prefix)
+                name = file_path.stem
+                if len(name) >= 8 and name[:8].isdigit():
+                    year = int(name[:4])
+                else:
+                    year = datetime.now().year
+
+            dest_folder = self.get_category_folder(new_category, year=year)
             dest_path = dest_folder / file_path.name
 
             # Handle duplicates
