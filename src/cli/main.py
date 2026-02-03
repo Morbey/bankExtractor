@@ -131,10 +131,10 @@ def extrair(
 
 
 @app.command()
-def faturas(
+def gerir_faturas(
     acao: str = typer.Argument(
         ...,
-        help="Ação: email, organizar, listar, stats",
+        help="Ação: organizar, listar, stats, categorias",
     ),
     pasta: Optional[str] = typer.Option(
         None,
@@ -152,7 +152,7 @@ def faturas(
         help="Filtrar por categoria.",
     ),
 ):
-    """Gerir faturas - download de email e organização."""
+    """Gerir faturas - organização e estatísticas."""
     console.print(Panel.fit(
         f"[bold green]Bank Extractor v{__version__}[/bold green]\n"
         "Gestão de Faturas",
@@ -161,9 +161,7 @@ def faturas(
 
     acao_lower = acao.lower()
 
-    if acao_lower == "email":
-        _faturas_email()
-    elif acao_lower == "organizar":
+    if acao_lower == "organizar":
         _faturas_organizar(pasta, mover)
     elif acao_lower == "listar":
         _faturas_listar(categoria)
@@ -173,7 +171,8 @@ def faturas(
         _faturas_categorias()
     else:
         console.print(f"[red]Ação desconhecida: {acao}[/red]")
-        console.print("Ações disponíveis: email, organizar, listar, stats, categorias")
+        console.print("Ações disponíveis: organizar, listar, stats, categorias")
+        console.print("[dim]Para download de faturas por email use: bank-extractor faturas[/dim]")
         raise typer.Exit(1)
 
 
