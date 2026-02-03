@@ -18,6 +18,19 @@ from src.modules.banks import BancoCTTBank, CGDEmpresasBank
 from src.modules.invoices import EmailClient, PDFInvoiceParser
 from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer
 from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader
+from src.modules.organizer import DocumentIndexer, DocumentType
+from src.modules.reporter import (
+    ConsoleFormatter,
+    ReportConfig,
+    ReportFormat,
+    ReportGenerator,
+    ReportMailer,
+)
+from src.modules.expenses import (
+    CATEGORY_NAMES,
+    ExpenseCategory,
+    ExpenseTracker,
+)
 
 app = typer.Typer(
     name="bank-extractor",
@@ -691,6 +704,854 @@ def faturas_limpar(
     CredentialManager.delete_credential(provider.lower(), "email")
     CredentialManager.delete_credential(provider.lower(), "password")
     console.print(f"[green]Credenciais do {provider} removidas.[/green]")
+
+
+@app.command()
+def organizar(
+    diretorio: Optional[str] = typer.Argument(
+        None,
+        help="Diretório a indexar. Default: data/",
+    ),
+    reindexar: bool = typer.Option(
+        False,
+        "--reindexar", "-r",
+        help="Limpar índice e reindexar tudo",
+    ),
+    estatisticas: bool = typer.Option(
+        False,
+        "--stats", "-s",
+        help="Mostrar estatísticas do catálogo",
+    ),
+):
+    """Organizar e catalogar documentos."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Organizador de documentos",
+        border_style="blue",
+    ))
+
+    indexer = DocumentIndexer()
+
+    # Show statistics only
+    if estatisticas:
+        _show_catalog_stats(indexer)
+        return
+
+    # Reindex all
+    if reindexar:
+        console.print("\n[yellow]A limpar índice e reindexar...[/yellow]")
+        result = indexer.reindex_all()
+    else:
+        # Index directory
+        from pathlib import Path
+        dir_path = Path(diretorio) if diretorio else None
+        console.print(f"\n[cyan]A indexar documentos em {dir_path or settings.data_dir}...[/cyan]")
+        result = indexer.index_directory(dir_path)
+
+    # Show results
+    console.print(f"\n[green]Indexação completa![/green]")
+
+    table = Table(title="Resultado da Indexação")
+    table.add_column("Métrica", style="cyan")
+    table.add_column("Valor", style="white", justify="right")
+
+    table.add_row("Ficheiros encontrados", str(result.total_files))
+    table.add_row("Indexados", f"[green]{result.indexed}[/green]")
+    table.add_row("Ignorados (já existentes)", str(result.skipped))
+    table.add_row("Erros", f"[red]{result.errors}[/red]" if result.errors else "0")
+
+    console.print(table)
+
+    # Show recent documents
+    if result.documents:
+        console.print("\n[bold]Documentos indexados:[/bold]")
+        doc_table = Table()
+        doc_table.add_column("Tipo", style="cyan")
+        doc_table.add_column("Ficheiro", style="white")
+        doc_table.add_column("Data", style="yellow")
+        doc_table.add_column("Valor", style="green", justify="right")
+
+        for doc in result.documents[:10]:  # Show first 10
+            doc_date = doc.document_date.strftime("%d-%m-%Y") if doc.document_date else "-"
+            amount = f"{doc.amount:.2f}€" if doc.amount else "-"
+            doc_table.add_row(
+                doc.document_type,
+                doc.file_name[:40] + "..." if len(doc.file_name) > 40 else doc.file_name,
+                doc_date,
+                amount,
+            )
+
+        console.print(doc_table)
+
+        if len(result.documents) > 10:
+            console.print(f"[dim]... e mais {len(result.documents) - 10} documentos[/dim]")
+
+
+def _show_catalog_stats(indexer: DocumentIndexer) -> None:
+    """Show catalog statistics."""
+    stats = indexer.get_statistics()
+
+    console.print("\n[bold]Estatísticas do Catálogo[/bold]")
+
+    # General stats
+    table = Table(title="Resumo Geral")
+    table.add_column("Métrica", style="cyan")
+    table.add_column("Valor", style="white", justify="right")
+
+    table.add_row("Total de documentos", str(stats["total_documents"]))
+    table.add_row("Fornecedores", str(stats["total_providers"]))
+    table.add_row("Tags", str(stats["total_tags"]))
+    table.add_row("Valor total", f"{stats['total_amount']:.2f}€")
+
+    console.print(table)
+
+    # By type
+    if stats["by_type"]:
+        type_table = Table(title="Por Tipo")
+        type_table.add_column("Tipo", style="cyan")
+        type_table.add_column("Quantidade", style="white", justify="right")
+
+        for doc_type, count in sorted(stats["by_type"].items(), key=lambda x: -x[1]):
+            type_table.add_row(doc_type, str(count))
+
+        console.print(type_table)
+
+    # By provider
+    if stats["by_provider"]:
+        prov_table = Table(title="Por Fornecedor")
+        prov_table.add_column("Fornecedor", style="cyan")
+        prov_table.add_column("Documentos", style="white", justify="right")
+
+        for provider, count in sorted(stats["by_provider"].items(), key=lambda x: -x[1])[:10]:
+            prov_table.add_row(provider, str(count))
+
+        console.print(prov_table)
+
+
+@app.command()
+def pesquisar(
+    query: str = typer.Argument(..., help="Texto a pesquisar"),
+    tipo: Optional[str] = typer.Option(
+        None,
+        "--tipo", "-t",
+        help="Filtrar por tipo: fatura, extrato, recibo, contrato, imposto",
+    ),
+    fornecedor: Optional[str] = typer.Option(
+        None,
+        "--fornecedor", "-f",
+        help="Filtrar por fornecedor",
+    ),
+    inicio: Optional[str] = typer.Option(
+        None,
+        "--inicio", "-i",
+        help="Data início (DD-MM-YYYY)",
+    ),
+    fim: Optional[str] = typer.Option(
+        None,
+        "--fim",
+        help="Data fim (DD-MM-YYYY)",
+    ),
+    limite: int = typer.Option(
+        20,
+        "--limite", "-l",
+        help="Número máximo de resultados",
+    ),
+):
+    """Pesquisar documentos no catálogo."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        f"Pesquisa: [cyan]{query}[/cyan]",
+        border_style="blue",
+    ))
+
+    indexer = DocumentIndexer()
+
+    # Parse document type
+    doc_type = None
+    if tipo:
+        try:
+            doc_type = DocumentType(tipo.lower())
+        except ValueError:
+            console.print(f"[red]Tipo inválido: {tipo}[/red]")
+            console.print("Tipos válidos: fatura, extrato, recibo, contrato, imposto, outro")
+            raise typer.Exit(1)
+
+    # Parse dates
+    start_date = parse_date(inicio) if inicio else None
+    end_date = parse_date(fim) if fim else None
+
+    # Search
+    result = indexer.search(
+        query=query,
+        document_type=doc_type,
+        provider_name=fornecedor,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limite,
+    )
+
+    if not result.documents:
+        console.print("\n[yellow]Nenhum documento encontrado.[/yellow]")
+        return
+
+    console.print(f"\n[green]Encontrados {result.total_count} documentos:[/green]")
+
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Tipo", style="cyan")
+    table.add_column("Ficheiro", style="white")
+    table.add_column("Fornecedor", style="green")
+    table.add_column("Data", style="yellow")
+    table.add_column("Valor", style="magenta", justify="right")
+
+    for doc in result.documents:
+        doc_date = doc.document_date.strftime("%d-%m-%Y") if doc.document_date else "-"
+        amount = f"{doc.amount:.2f}€" if doc.amount else "-"
+        provider = doc.provider.name if doc.provider else "-"
+        table.add_row(
+            str(doc.id),
+            doc.document_type,
+            doc.file_name[:35] + "..." if len(doc.file_name) > 35 else doc.file_name,
+            provider[:15] + "..." if len(provider) > 15 else provider,
+            doc_date,
+            amount,
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Use 'bank-extractor documento <ID>' para ver detalhes[/dim]")
+
+
+@app.command()
+def documento(
+    doc_id: int = typer.Argument(..., help="ID do documento"),
+    abrir: bool = typer.Option(
+        False,
+        "--abrir", "-a",
+        help="Abrir o ficheiro",
+    ),
+):
+    """Ver detalhes de um documento."""
+    indexer = DocumentIndexer()
+    doc = indexer.get_document_by_id(doc_id)
+
+    if not doc:
+        console.print(f"[red]Documento não encontrado: {doc_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(Panel.fit(
+        f"[bold]Documento #{doc.id}[/bold]",
+        border_style="blue",
+    ))
+
+    table = Table(show_header=False)
+    table.add_column("Campo", style="cyan")
+    table.add_column("Valor", style="white")
+
+    table.add_row("Ficheiro", doc.file_name)
+    table.add_row("Caminho", str(doc.file_path))
+    table.add_row("Tipo", doc.document_type)
+    table.add_row("Estado", doc.status)
+    table.add_row("Fornecedor", doc.provider.name if doc.provider else "-")
+    table.add_row("Data documento", doc.document_date.strftime("%d-%m-%Y") if doc.document_date else "-")
+    table.add_row("Data vencimento", doc.due_date.strftime("%d-%m-%Y") if doc.due_date else "-")
+    table.add_row("Valor", f"{doc.amount:.2f}€" if doc.amount else "-")
+    table.add_row("Referência", doc.reference or "-")
+    table.add_row("Tamanho", f"{doc.file_size / 1024:.1f} KB")
+    table.add_row("Hash", doc.file_hash[:16] + "...")
+    table.add_row("Indexado em", doc.created_at.strftime("%d-%m-%Y %H:%M"))
+
+    if doc.tags:
+        tags_str = ", ".join(t.name for t in doc.tags)
+        table.add_row("Tags", tags_str)
+
+    console.print(table)
+
+    # Open file if requested
+    if abrir:
+        import subprocess
+        import sys
+
+        file_path = doc.path
+        if not file_path.exists():
+            console.print(f"[red]Ficheiro não encontrado: {file_path}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[cyan]A abrir {file_path.name}...[/cyan]")
+
+        if sys.platform == "win32":
+            subprocess.run(["start", "", str(file_path)], shell=True)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(file_path)])
+        else:
+            subprocess.run(["xdg-open", str(file_path)])
+
+
+@app.command()
+def relatorio(
+    mes: str = typer.Argument(
+        ...,
+        help="Mês do relatório (MM-YYYY ou 'atual')",
+    ),
+    formato: str = typer.Option(
+        "console",
+        "--formato", "-f",
+        help="Formato: console, html, excel",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output", "-o",
+        help="Ficheiro de output (para html/excel)",
+    ),
+    sem_comparacao: bool = typer.Option(
+        False,
+        "--sem-comparacao",
+        help="Não incluir comparação com mês anterior",
+    ),
+):
+    """Gerar relatório financeiro mensal."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Relatórios Financeiros",
+        border_style="blue",
+    ))
+
+    # Parse month
+    if mes.lower() == "atual":
+        today = date.today()
+        year, month = today.year, today.month
+    else:
+        try:
+            parts = mes.split("-")
+            if len(parts) == 2:
+                month, year = int(parts[0]), int(parts[1])
+            else:
+                raise ValueError()
+        except ValueError:
+            console.print("[red]Formato de mês inválido. Use MM-YYYY ou 'atual'[/red]")
+            raise typer.Exit(1)
+
+    # Parse format
+    format_map = {
+        "console": ReportFormat.CONSOLE,
+        "html": ReportFormat.HTML,
+        "excel": ReportFormat.EXCEL,
+        "pdf": ReportFormat.PDF,
+    }
+    report_format = format_map.get(formato.lower())
+    if not report_format:
+        console.print(f"[red]Formato inválido: {formato}[/red]")
+        console.print("Formatos disponíveis: console, html, excel")
+        raise typer.Exit(1)
+
+    # Generate report
+    config = ReportConfig(
+        year=year,
+        month=month,
+        format=report_format,
+        include_comparison=not sem_comparacao,
+    )
+
+    console.print(f"\n[cyan]A gerar relatório para {month:02d}/{year}...[/cyan]")
+
+    generator = ReportGenerator()
+    report = generator.generate(config)
+
+    # Output based on format
+    if report_format == ReportFormat.CONSOLE:
+        formatter = ConsoleFormatter()
+        formatter.render(report)
+    else:
+        # Save to file
+        from pathlib import Path
+        from src.modules.reporter import get_formatter
+
+        if output:
+            output_path = Path(output)
+        else:
+            ext = {"html": ".html", "excel": ".xlsx", "pdf": ".html"}.get(formato.lower(), ".txt")
+            output_path = settings.data_dir / f"relatorio_{year}_{month:02d}{ext}"
+
+        formatter = get_formatter(report_format)
+        if formatter.save(report, output_path):
+            console.print(f"\n[green]Relatório guardado em: {output_path}[/green]")
+        else:
+            console.print("[red]Erro ao guardar relatório.[/red]")
+            raise typer.Exit(1)
+
+
+@app.command()
+def enviar(
+    mes: str = typer.Argument(
+        ...,
+        help="Mês do relatório (MM-YYYY ou 'atual')",
+    ),
+    email: str = typer.Argument(
+        ...,
+        help="Email do destinatário",
+    ),
+    provider: str = typer.Option(
+        "gmail",
+        "--provider", "-p",
+        help="Provider de email para envio: gmail, hotmail",
+    ),
+    anexar_docs: bool = typer.Option(
+        False,
+        "--anexar", "-a",
+        help="Anexar documentos do período",
+    ),
+):
+    """Enviar relatório por email."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Envio de Relatório",
+        border_style="blue",
+    ))
+
+    # Parse month
+    if mes.lower() == "atual":
+        today = date.today()
+        year, month = today.year, today.month
+    else:
+        try:
+            parts = mes.split("-")
+            if len(parts) == 2:
+                month, year = int(parts[0]), int(parts[1])
+            else:
+                raise ValueError()
+        except ValueError:
+            console.print("[red]Formato de mês inválido. Use MM-YYYY ou 'atual'[/red]")
+            raise typer.Exit(1)
+
+    # Generate report
+    config = ReportConfig(year=year, month=month)
+    generator = ReportGenerator()
+    report = generator.generate(config)
+
+    if not report.has_data:
+        console.print("[yellow]Relatório sem dados. Nada a enviar.[/yellow]")
+        raise typer.Exit(0)
+
+    # Get attachments if requested
+    attachments = []
+    if anexar_docs and report.documents:
+        from pathlib import Path
+        for doc in report.documents:
+            doc_path = Path(doc.file_name) if doc.file_name else None
+            # We'd need the actual path from the indexer
+            # For now, just note that attachments would be added here
+
+    # Send email
+    console.print(f"\n[cyan]A enviar relatório para {email}...[/cyan]")
+
+    try:
+        mailer = ReportMailer(provider=provider)
+        if mailer.send_report(report, email, attachments if attachments else None):
+            console.print(f"\n[green]Relatório enviado com sucesso para {email}![/green]")
+        else:
+            console.print("[red]Falha ao enviar relatório.[/red]")
+            raise typer.Exit(1)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def relatorio_anual(
+    ano: int = typer.Argument(..., help="Ano do relatório"),
+    formato: str = typer.Option(
+        "console",
+        "--formato", "-f",
+        help="Formato: console, html, excel",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output", "-o",
+        help="Ficheiro de output",
+    ),
+):
+    """Gerar relatório anual."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        f"Relatório Anual {ano}",
+        border_style="blue",
+    ))
+
+    console.print(f"\n[cyan]A gerar relatório anual para {ano}...[/cyan]")
+
+    generator = ReportGenerator()
+    report = generator.generate_yearly(ano)
+
+    # Parse format
+    format_map = {
+        "console": ReportFormat.CONSOLE,
+        "html": ReportFormat.HTML,
+        "excel": ReportFormat.EXCEL,
+    }
+    report_format = format_map.get(formato.lower(), ReportFormat.CONSOLE)
+
+    if report_format == ReportFormat.CONSOLE:
+        formatter = ConsoleFormatter()
+        formatter.render(report)
+    else:
+        from pathlib import Path
+        from src.modules.reporter import get_formatter
+
+        if output:
+            output_path = Path(output)
+        else:
+            ext = {"html": ".html", "excel": ".xlsx"}.get(formato.lower(), ".txt")
+            output_path = settings.data_dir / f"relatorio_anual_{ano}{ext}"
+
+        formatter = get_formatter(report_format)
+        if formatter.save(report, output_path):
+            console.print(f"\n[green]Relatório guardado em: {output_path}[/green]")
+        else:
+            console.print("[red]Erro ao guardar relatório.[/red]")
+
+
+@app.command()
+def despesas(
+    mes: str = typer.Argument(
+        "atual",
+        help="Mês a analisar (MM-YYYY ou 'atual')",
+    ),
+    importar: bool = typer.Option(
+        False,
+        "--importar", "-i",
+        help="Importar despesas dos documentos indexados",
+    ),
+    categoria: Optional[str] = typer.Option(
+        None,
+        "--categoria", "-c",
+        help="Filtrar por categoria",
+    ),
+):
+    """Ver e analisar despesas."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Tracking de Despesas",
+        border_style="blue",
+    ))
+
+    tracker = ExpenseTracker()
+
+    # Import from documents if requested
+    if importar:
+        console.print("\n[cyan]A importar despesas dos documentos...[/cyan]")
+        count = tracker.import_from_documents()
+        console.print(f"[green]Importadas {count} despesas.[/green]\n")
+
+    # Parse month
+    if mes.lower() == "atual":
+        today = date.today()
+        year, month = today.year, today.month
+    else:
+        try:
+            parts = mes.split("-")
+            month, year = int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            console.print("[red]Formato inválido. Use MM-YYYY ou 'atual'[/red]")
+            raise typer.Exit(1)
+
+    # Get analysis
+    analysis = tracker.analyzer.analyze_month(year, month)
+
+    # Summary
+    console.print(f"\n[bold]Despesas de {month:02d}/{year}[/bold]")
+
+    summary_table = Table(show_header=False)
+    summary_table.add_column("Metric", style="cyan")
+    summary_table.add_column("Value", style="white")
+
+    summary_table.add_row("Total despesas", f"[bold green]{analysis.total_expenses:.2f}€[/bold green]")
+    summary_table.add_row("Número de despesas", str(analysis.expense_count))
+
+    if analysis.comparison_previous is not None:
+        trend = "▲" if analysis.comparison_percentage > 0 else "▼"
+        color = "red" if analysis.comparison_percentage > 0 else "green"
+        summary_table.add_row(
+            "vs. mês anterior",
+            f"[{color}]{trend} {analysis.comparison_previous:+.2f}€ ({analysis.comparison_percentage:+.1f}%)[/{color}]"
+        )
+
+    console.print(summary_table)
+
+    # By category
+    if analysis.by_category:
+        console.print("\n[bold]Por Categoria[/bold]")
+        cat_table = Table()
+        cat_table.add_column("Categoria", style="cyan")
+        cat_table.add_column("Total", justify="right", style="green")
+        cat_table.add_column("Qtd", justify="right")
+        cat_table.add_column("Média", justify="right")
+        cat_table.add_column("Tendência", justify="center")
+
+        for cat in analysis.by_category:
+            if categoria and categoria.lower() not in cat.category.lower():
+                continue
+
+            trend_icon = {"up": "▲", "down": "▼", "stable": "─", "new": "★"}.get(cat.trend, "─")
+            trend_color = {"up": "red", "down": "green", "stable": "yellow", "new": "cyan"}.get(cat.trend, "white")
+
+            cat_table.add_row(
+                cat.category_name,
+                f"{cat.total_amount:.2f}€",
+                str(cat.expense_count),
+                f"{cat.average_amount:.2f}€",
+                f"[{trend_color}]{trend_icon}[/{trend_color}]",
+            )
+
+        console.print(cat_table)
+
+    # Top providers
+    if analysis.top_providers:
+        console.print("\n[bold]Top Fornecedores[/bold]")
+        prov_table = Table()
+        prov_table.add_column("Fornecedor", style="cyan")
+        prov_table.add_column("Total", justify="right", style="green")
+
+        for provider, amount in analysis.top_providers[:5]:
+            prov_table.add_row(provider, f"{amount:.2f}€")
+
+        console.print(prov_table)
+
+    # Alerts
+    if analysis.alerts:
+        console.print(f"\n[bold yellow]Alertas ({len(analysis.alerts)})[/bold yellow]")
+        for alert in analysis.alerts[:5]:
+            severity_color = {"info": "blue", "aviso": "yellow", "critico": "red"}.get(alert.severity, "white")
+            console.print(f"  [{severity_color}]•[/{severity_color}] {alert.message}")
+
+
+@app.command()
+def orcamento(
+    categoria: Optional[str] = typer.Argument(
+        None,
+        help="Categoria para definir/ver orçamento",
+    ),
+    valor: Optional[float] = typer.Option(
+        None,
+        "--valor", "-v",
+        help="Valor limite mensal",
+    ),
+    listar: bool = typer.Option(
+        False,
+        "--listar", "-l",
+        help="Listar todos os orçamentos",
+    ),
+    remover: bool = typer.Option(
+        False,
+        "--remover", "-r",
+        help="Remover orçamento da categoria",
+    ),
+):
+    """Gerir orçamentos por categoria."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Gestão de Orçamentos",
+        border_style="blue",
+    ))
+
+    tracker = ExpenseTracker()
+
+    # List all budgets
+    if listar or (not categoria and not valor):
+        today = date.today()
+        status = tracker.get_budget_status(today.year, today.month)
+
+        if not status:
+            console.print("\n[yellow]Nenhum orçamento definido.[/yellow]")
+            console.print("[dim]Use: bank-extractor orcamento <categoria> --valor <limite>[/dim]")
+
+            # Show available categories
+            console.print("\n[bold]Categorias disponíveis:[/bold]")
+            for cat in ExpenseCategory:
+                name = CATEGORY_NAMES.get(cat, cat.value)
+                console.print(f"  • {cat.value} - {name}")
+            return
+
+        console.print(f"\n[bold]Orçamentos - {today.strftime('%B %Y')}[/bold]")
+        table = Table()
+        table.add_column("Categoria", style="cyan")
+        table.add_column("Limite", justify="right")
+        table.add_column("Gasto", justify="right")
+        table.add_column("Restante", justify="right")
+        table.add_column("Progresso", justify="left")
+
+        for s in status:
+            # Progress bar
+            pct = min(s["percentage"], 100)
+            filled = int(pct / 5)
+            bar = "█" * filled + "░" * (20 - filled)
+
+            if s["is_exceeded"]:
+                color = "red"
+            elif s["is_warning"]:
+                color = "yellow"
+            else:
+                color = "green"
+
+            table.add_row(
+                s["category_name"],
+                f"{s['limit']:.2f}€",
+                f"{s['spent']:.2f}€",
+                f"[{color}]{s['remaining']:.2f}€[/{color}]",
+                f"[{color}]{bar}[/{color}] {s['percentage']:.0f}%",
+            )
+
+        console.print(table)
+        return
+
+    # Validate category
+    try:
+        cat_enum = ExpenseCategory(categoria.lower())
+    except ValueError:
+        console.print(f"[red]Categoria inválida: {categoria}[/red]")
+        console.print("Categorias válidas:")
+        for cat in ExpenseCategory:
+            console.print(f"  • {cat.value}")
+        raise typer.Exit(1)
+
+    # Remove budget
+    if remover:
+        if tracker.delete_budget(cat_enum):
+            console.print(f"[green]Orçamento de {categoria} removido.[/green]")
+        else:
+            console.print(f"[yellow]Nenhum orçamento encontrado para {categoria}.[/yellow]")
+        return
+
+    # Set budget
+    if valor is not None:
+        tracker.set_budget(cat_enum, valor)
+        cat_name = CATEGORY_NAMES.get(cat_enum, categoria)
+        console.print(f"[green]Orçamento definido: {cat_name} = {valor:.2f}€/mês[/green]")
+    else:
+        console.print("[yellow]Use --valor para definir o limite mensal.[/yellow]")
+
+
+@app.command()
+def alertas(
+    limpar: bool = typer.Option(
+        False,
+        "--limpar", "-l",
+        help="Limpar todos os alertas",
+    ),
+    verificar: bool = typer.Option(
+        False,
+        "--verificar", "-v",
+        help="Verificar orçamentos e gerar alertas",
+    ),
+):
+    """Ver e gerir alertas de despesas."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        "Alertas de Despesas",
+        border_style="blue",
+    ))
+
+    tracker = ExpenseTracker()
+
+    # Check budgets and generate alerts
+    if verificar:
+        console.print("\n[cyan]A verificar orçamentos...[/cyan]")
+        alerts = tracker.check_all_budgets()
+        if alerts:
+            console.print(f"[yellow]Gerados {len(alerts)} alertas.[/yellow]")
+        else:
+            console.print("[green]Todos os orçamentos dentro dos limites.[/green]")
+
+    # Get pending alerts
+    alerts = tracker.get_alerts()
+
+    if not alerts:
+        console.print("\n[green]Sem alertas pendentes.[/green]")
+        return
+
+    console.print(f"\n[bold]Alertas Pendentes ({len(alerts)})[/bold]")
+
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Severidade", justify="center")
+    table.add_column("Tipo", style="cyan")
+    table.add_column("Mensagem", style="white")
+    table.add_column("Data", style="yellow")
+
+    for alert in alerts:
+        severity_icon = {
+            "info": "[blue]ℹ[/blue]",
+            "aviso": "[yellow]⚠[/yellow]",
+            "critico": "[red]🔴[/red]",
+        }.get(alert.severity, "•")
+
+        table.add_row(
+            str(alert.id),
+            severity_icon,
+            alert.alert_type,
+            alert.message[:50] + "..." if len(alert.message) > 50 else alert.message,
+            alert.created_at.strftime("%d-%m-%Y"),
+        )
+
+    console.print(table)
+
+    if limpar:
+        console.print("\n[cyan]A limpar alertas...[/cyan]")
+        for alert in alerts:
+            tracker.analyzer.dismiss_alert(alert.id)
+        console.print("[green]Alertas limpos.[/green]")
+
+
+@app.command()
+def tendencias(
+    meses: int = typer.Option(
+        6,
+        "--meses", "-m",
+        help="Número de meses a analisar",
+    ),
+):
+    """Ver tendências de despesas."""
+    console.print(Panel.fit(
+        f"[bold blue]Bank Extractor v{__version__}[/bold blue]\n"
+        f"Tendências ({meses} meses)",
+        border_style="blue",
+    ))
+
+    tracker = ExpenseTracker()
+    trends = tracker.get_trends(meses)
+
+    # Monthly totals
+    console.print("\n[bold]Totais Mensais[/bold]")
+    table = Table()
+    table.add_column("Mês", style="cyan")
+    table.add_column("Total", justify="right", style="green")
+    table.add_column("Gráfico", style="blue")
+
+    max_total = max((m["total"] for m in trends["monthly_totals"]), default=1)
+
+    for m in trends["monthly_totals"]:
+        bar_width = int((m["total"] / max_total) * 30) if max_total > 0 else 0
+        bar = "█" * bar_width
+
+        table.add_row(
+            f"{m['month']:02d}/{m['year']}",
+            f"{m['total']:.2f}€",
+            bar,
+        )
+
+    console.print(table)
+
+    # Summary
+    console.print(f"\n[bold]Resumo[/bold]")
+    summary = Table(show_header=False)
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="white")
+
+    summary.add_row("Média mensal", f"{trends['average_monthly']:.2f}€")
+
+    trend_icon = {"up": "▲", "down": "▼", "stable": "─"}.get(trends["trend_direction"], "─")
+    trend_color = {"up": "red", "down": "green", "stable": "yellow"}.get(trends["trend_direction"], "white")
+    summary.add_row("Tendência", f"[{trend_color}]{trend_icon} {trends['trend_direction'].title()}[/{trend_color}]")
+
+    console.print(summary)
 
 
 def main():

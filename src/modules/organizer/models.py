@@ -1,368 +1,183 @@
-"""Database models for invoice cataloging."""
+"""Database models for document organization."""
 
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean,
     Column,
-    Date,
     DateTime,
-    Enum,
+    Float,
+    ForeignKey,
     Integer,
-    Numeric,
     String,
+    Table,
     Text,
     create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 
-from src.core.categories import InvoiceCategory
-from src.core.config import settings
+from src.core import settings
 
 
 class Base(DeclarativeBase):
-    """Base class for all models."""
+    """SQLAlchemy declarative base."""
 
     pass
 
 
-class Invoice(Base):
-    """Model for cataloged invoices."""
+class DocumentType(str, Enum):
+    """Types of financial documents."""
 
-    __tablename__ = "invoices"
+    INVOICE = "fatura"
+    STATEMENT = "extrato"
+    RECEIPT = "recibo"
+    CONTRACT = "contrato"
+    TAX = "imposto"
+    OTHER = "outro"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+
+class DocumentStatus(str, Enum):
+    """Document processing status."""
+
+    PENDING = "pendente"
+    PROCESSED = "processado"
+    ERROR = "erro"
+
+
+# Association table for document tags
+document_tags = Table(
+    "document_tags",
+    Base.metadata,
+    Column("document_id", Integer, ForeignKey("documents.id"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tags.id"), primary_key=True),
+)
+
+
+class Tag(Base):
+    """Tag for categorizing documents."""
+
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # Hex color
+
+    documents: Mapped[list["Document"]] = relationship(
+        "Document",
+        secondary=document_tags,
+        back_populates="tags",
+    )
+
+    def __repr__(self) -> str:
+        return f"Tag(name={self.name!r})"
+
+
+class Provider(Base):
+    """Provider/vendor of documents (e.g., EDP, NOS, CGD)."""
+
+    __tablename__ = "providers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    email_pattern: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
+    documents: Mapped[list["Document"]] = relationship("Document", back_populates="provider")
+
+    def __repr__(self) -> str:
+        return f"Provider(name={self.name!r})"
+
+
+class Document(Base):
+    """Represents a financial document (invoice, statement, receipt)."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
 
     # File information
-    file_path = Column(String(500), nullable=False, unique=True)
-    file_name = Column(String(255), nullable=False)
-    file_hash = Column(String(64), nullable=True)  # SHA256 hash for deduplication
+    file_path: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    file_size: Mapped[int] = mapped_column(Integer)
+    file_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # SHA-256
 
-    # Categorization
-    category = Column(Enum(InvoiceCategory), nullable=False, default=InvoiceCategory.OUTROS)
+    # Document metadata
+    document_type: Mapped[str] = mapped_column(String(20), default=DocumentType.OTHER.value)
+    status: Mapped[str] = mapped_column(String(20), default=DocumentStatus.PENDING.value)
 
-    # Extracted metadata
-    nif_emitente = Column(String(9), nullable=True, index=True)
-    nif_cliente = Column(String(9), nullable=True)
-    vendor_name = Column(String(255), nullable=True)
-    invoice_number = Column(String(100), nullable=True)
-    invoice_date = Column(Date, nullable=True, index=True)
-    due_date = Column(Date, nullable=True)
-    total_amount = Column(Numeric(12, 2), nullable=True)
-    currency = Column(String(3), default="EUR")
+    # Extracted information
+    document_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    reference: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
-    # Email source information (if from email)
-    email_sender = Column(String(255), nullable=True)
-    email_subject = Column(String(500), nullable=True)
-    email_date = Column(DateTime, nullable=True)
-    email_message_id = Column(String(255), nullable=True)
+    # Full text content for search
+    text_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Processing information
-    processed_at = Column(DateTime, default=datetime.utcnow)
-    manually_categorized = Column(Boolean, default=False)
-    notes = Column(Text, nullable=True)
+    # Provider relationship
+    provider_id: Mapped[Optional[int]] = mapped_column(ForeignKey("providers.id"), nullable=True)
+    provider: Mapped[Optional["Provider"]] = relationship("Provider", back_populates="documents")
 
-    # Status
-    is_paid = Column(Boolean, default=False)
-    paid_date = Column(Date, nullable=True)
+    # Tags
+    tags: Mapped[list["Tag"]] = relationship(
+        "Tag",
+        secondary=document_tags,
+        back_populates="documents",
+    )
 
-    def __repr__(self) -> str:
-        return f"<Invoice {self.id}: {self.file_name} ({self.category.value})>"
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
-
-class EmailAccount(Base):
-    """Model for configured email accounts."""
-
-    __tablename__ = "email_accounts"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
-    email_address = Column(String(255), nullable=False, unique=True)
-    imap_server = Column(String(255), nullable=False)
-    imap_port = Column(Integer, default=993)
-    use_ssl = Column(Boolean, default=True)
-    is_active = Column(Boolean, default=True)
-    last_sync = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Source information
+    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # gmail, hotmail, manual
+    source_email: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     def __repr__(self) -> str:
-        return f"<EmailAccount {self.name}: {self.email_address}>"
+        return f"Document(file_name={self.file_name!r}, type={self.document_type!r})"
+
+    @property
+    def path(self) -> Path:
+        """Get the file path as a Path object."""
+        return Path(self.file_path)
 
 
-class InvoiceDatabase:
-    """Database manager for invoice catalog."""
+class ProcessingLog(Base):
+    """Log of document processing attempts."""
 
-    def __init__(self, db_path: Optional[Path] = None):
-        """Initialize database.
+    __tablename__ = "processing_logs"
 
-        Args:
-            db_path: Path to SQLite database file. Uses default if not provided.
-        """
-        if db_path is None:
-            db_path = settings.data_dir / "invoices.db"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    action: Mapped[str] = mapped_column(String(50))
+    success: Mapped[bool] = mapped_column(default=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    document: Mapped["Document"] = relationship("Document")
 
-        self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
-        self.SessionLocal = sessionmaker(bind=self.engine)
+    def __repr__(self) -> str:
+        return f"ProcessingLog(document_id={self.document_id}, action={self.action!r})"
 
-        # Create tables
-        Base.metadata.create_all(self.engine)
 
-    def get_session(self) -> Session:
-        """Get a new database session."""
-        return self.SessionLocal()
+def get_engine():
+    """Get SQLAlchemy engine for the document database."""
+    db_path = settings.data_dir / "catalogo" / "documents.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return create_engine(f"sqlite:///{db_path}", echo=False)
 
-    def add_invoice(
-        self,
-        file_path: Path,
-        category: InvoiceCategory,
-        nif_emitente: Optional[str] = None,
-        nif_cliente: Optional[str] = None,
-        vendor_name: Optional[str] = None,
-        invoice_number: Optional[str] = None,
-        invoice_date: Optional[date] = None,
-        total_amount: Optional[Decimal] = None,
-        email_sender: Optional[str] = None,
-        email_subject: Optional[str] = None,
-        email_date: Optional[datetime] = None,
-        email_message_id: Optional[str] = None,
-    ) -> Invoice:
-        """Add a new invoice to the catalog.
 
-        Args:
-            file_path: Path to invoice file.
-            category: Invoice category.
-            ... (other metadata fields)
+def init_db():
+    """Initialize the database, creating all tables."""
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    return engine
 
-        Returns:
-            Created Invoice object.
-        """
-        with self.get_session() as session:
-            invoice = Invoice(
-                file_path=str(file_path),
-                file_name=file_path.name,
-                category=category,
-                nif_emitente=nif_emitente,
-                nif_cliente=nif_cliente,
-                vendor_name=vendor_name,
-                invoice_number=invoice_number,
-                invoice_date=invoice_date,
-                total_amount=total_amount,
-                email_sender=email_sender,
-                email_subject=email_subject,
-                email_date=email_date,
-                email_message_id=email_message_id,
-            )
-            session.add(invoice)
-            session.commit()
-            session.refresh(invoice)
-            return invoice
 
-    def get_invoice_by_path(self, file_path: Path) -> Optional[Invoice]:
-        """Get invoice by file path.
-
-        Args:
-            file_path: Path to invoice file.
-
-        Returns:
-            Invoice if found, None otherwise.
-        """
-        with self.get_session() as session:
-            return session.query(Invoice).filter(Invoice.file_path == str(file_path)).first()
-
-    def get_invoices_by_category(self, category: InvoiceCategory) -> list[Invoice]:
-        """Get all invoices in a category.
-
-        Args:
-            category: Invoice category.
-
-        Returns:
-            List of invoices.
-        """
-        with self.get_session() as session:
-            return session.query(Invoice).filter(Invoice.category == category).all()
-
-    def get_invoices_by_nif(self, nif: str) -> list[Invoice]:
-        """Get all invoices from a specific NIF.
-
-        Args:
-            nif: NIF to search for.
-
-        Returns:
-            List of invoices.
-        """
-        with self.get_session() as session:
-            return session.query(Invoice).filter(Invoice.nif_emitente == nif).all()
-
-    def get_invoices_by_date_range(
-        self,
-        start_date: date,
-        end_date: date,
-    ) -> list[Invoice]:
-        """Get invoices within a date range.
-
-        Args:
-            start_date: Start of period.
-            end_date: End of period.
-
-        Returns:
-            List of invoices.
-        """
-        with self.get_session() as session:
-            return (
-                session.query(Invoice)
-                .filter(Invoice.invoice_date >= start_date)
-                .filter(Invoice.invoice_date <= end_date)
-                .order_by(Invoice.invoice_date)
-                .all()
-            )
-
-    def get_total_by_category(
-        self,
-        start_date: Optional[date] = None,
-        end_date: Optional[date] = None,
-    ) -> dict[InvoiceCategory, Decimal]:
-        """Get total amount per category.
-
-        Args:
-            start_date: Optional start date filter.
-            end_date: Optional end date filter.
-
-        Returns:
-            Dictionary mapping category to total amount.
-        """
-        with self.get_session() as session:
-            query = session.query(Invoice).filter(Invoice.total_amount.isnot(None))
-
-            if start_date:
-                query = query.filter(Invoice.invoice_date >= start_date)
-            if end_date:
-                query = query.filter(Invoice.invoice_date <= end_date)
-
-            invoices = query.all()
-
-            totals: dict[InvoiceCategory, Decimal] = {}
-            for inv in invoices:
-                if inv.category not in totals:
-                    totals[inv.category] = Decimal("0")
-                totals[inv.category] += inv.total_amount or Decimal("0")
-
-            return totals
-
-    def update_category(
-        self,
-        invoice_id: int,
-        new_category: InvoiceCategory,
-        manual: bool = True,
-    ) -> bool:
-        """Update invoice category.
-
-        Args:
-            invoice_id: Invoice ID.
-            new_category: New category.
-            manual: Mark as manually categorized.
-
-        Returns:
-            True if updated successfully.
-        """
-        with self.get_session() as session:
-            invoice = session.query(Invoice).filter(Invoice.id == invoice_id).first()
-            if invoice:
-                invoice.category = new_category
-                invoice.manually_categorized = manual
-                session.commit()
-                return True
-            return False
-
-    def mark_as_paid(self, invoice_id: int, paid_date: Optional[date] = None) -> bool:
-        """Mark invoice as paid.
-
-        Args:
-            invoice_id: Invoice ID.
-            paid_date: Date when paid (defaults to today).
-
-        Returns:
-            True if updated successfully.
-        """
-        with self.get_session() as session:
-            invoice = session.query(Invoice).filter(Invoice.id == invoice_id).first()
-            if invoice:
-                invoice.is_paid = True
-                invoice.paid_date = paid_date or date.today()
-                session.commit()
-                return True
-            return False
-
-    def search_invoices(
-        self,
-        search_term: str,
-        limit: int = 50,
-    ) -> list[Invoice]:
-        """Search invoices by various fields.
-
-        Args:
-            search_term: Term to search for.
-            limit: Maximum results.
-
-        Returns:
-            List of matching invoices.
-        """
-        with self.get_session() as session:
-            search_pattern = f"%{search_term}%"
-            return (
-                session.query(Invoice)
-                .filter(
-                    (Invoice.file_name.ilike(search_pattern))
-                    | (Invoice.vendor_name.ilike(search_pattern))
-                    | (Invoice.invoice_number.ilike(search_pattern))
-                    | (Invoice.email_subject.ilike(search_pattern))
-                    | (Invoice.nif_emitente.ilike(search_pattern))
-                )
-                .order_by(Invoice.invoice_date.desc())
-                .limit(limit)
-                .all()
-            )
-
-    def get_statistics(self) -> dict:
-        """Get overall statistics.
-
-        Returns:
-            Dictionary with statistics.
-        """
-        with self.get_session() as session:
-            total_count = session.query(Invoice).count()
-            total_amount = sum(
-                (inv.total_amount or Decimal("0"))
-                for inv in session.query(Invoice).filter(Invoice.total_amount.isnot(None)).all()
-            )
-            paid_count = session.query(Invoice).filter(Invoice.is_paid == True).count()
-            unpaid_count = total_count - paid_count
-
-            categories = {}
-            for category in InvoiceCategory:
-                count = session.query(Invoice).filter(Invoice.category == category).count()
-                if count > 0:
-                    categories[category.value] = count
-
-            return {
-                "total_invoices": total_count,
-                "total_amount": total_amount,
-                "paid_count": paid_count,
-                "unpaid_count": unpaid_count,
-                "by_category": categories,
-            }
-
-    def invoice_exists(self, file_path: Path) -> bool:
-        """Check if invoice already exists in database.
-
-        Args:
-            file_path: Path to check.
-
-        Returns:
-            True if exists.
-        """
-        return self.get_invoice_by_path(file_path) is not None
+def get_session() -> Session:
+    """Get a new database session."""
+    engine = get_engine()
+    return Session(engine)
