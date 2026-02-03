@@ -19,7 +19,7 @@ from src.modules.invoices import EmailClient, PDFInvoiceParser
 from src.modules.organizer import InvoiceDatabase, InvoiceOrganizer, DocumentProcessor
 from src.modules.invoices import EMAIL_PROVIDERS, EmailFilter, InvoiceDownloader
 from src.modules.organizer import DocumentIndexer, DocumentType
-from src.core.document_registry import get_document_registry, EntityType
+from src.core.document_registry import get_document_registry, EntityType, AccountingScope
 from src.core.classification_rules import get_rules_engine, MatchSource, MatchType, RuleAction
 from src.modules.reporter import (
     ConsoleFormatter,
@@ -1134,6 +1134,11 @@ def entidades(
         "--tipo", "-t",
         help="Tipo: empresa, pessoa, banco, proprio",
     ),
+    scope: Optional[str] = typer.Option(
+        None,
+        "--scope", "-s",
+        help="Âmbito contabilístico: pessoal, empresa",
+    ),
     nif: Optional[str] = typer.Option(
         None,
         "--nif",
@@ -1172,29 +1177,24 @@ def entidades(
         table.add_column("ID", style="dim", width=10)
         table.add_column("Nome", style="cyan")
         table.add_column("Pasta", style="green")
+        table.add_column("Âmbito", style="magenta")
         table.add_column("Tipo", style="yellow")
         table.add_column("NIFs", style="white")
-        table.add_column("IBANs", style="white")
 
         for e in entities:
             nifs_display = ", ".join(e.nifs[:2]) if e.nifs else "-"
             if len(e.nifs) > 2:
                 nifs_display += f" (+{len(e.nifs) - 2})"
 
-            ibans_display = []
-            for i in e.ibans[:2]:
-                ibans_display.append(f"{i[:8]}...{i[-4:]}")
-            ibans_str = ", ".join(ibans_display) if ibans_display else "-"
-            if len(e.ibans) > 2:
-                ibans_str += f" (+{len(e.ibans) - 2})"
+            scope_display = e.scope.value if hasattr(e, 'scope') else "empresa"
 
             table.add_row(
                 e.id[:10],
                 e.name[:30],
                 e.folder_name[:20],
+                scope_display,
                 e.entity_type.value,
                 nifs_display,
-                ibans_str,
             )
 
         console.print(table)
@@ -1213,6 +1213,13 @@ def entidades(
             except ValueError:
                 console.print(f"[yellow]Tipo inválido: {tipo}. Usando 'desconhecido'.[/yellow]")
 
+        accounting_scope = AccountingScope.EMPRESA
+        if scope:
+            try:
+                accounting_scope = AccountingScope(scope.lower())
+            except ValueError:
+                console.print(f"[yellow]Âmbito inválido: {scope}. Usando 'empresa'.[/yellow]")
+
         nifs_list = [nif] if nif else []
         ibans_list = [iban] if iban else []
 
@@ -1220,6 +1227,7 @@ def entidades(
             name=nome,
             folder_name=folder_name,
             entity_type=entity_type,
+            scope=accounting_scope,
             nifs=nifs_list,
             ibans=ibans_list,
         )

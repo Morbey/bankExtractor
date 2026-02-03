@@ -29,6 +29,7 @@ from src.core.classification_rules import (
     get_rules_engine,
 )
 from src.core.document_registry import (
+    AccountingScope,
     DocumentRecord,
     DocumentStatus,
     DocumentType,
@@ -395,11 +396,17 @@ class InvoiceProcessor:
         except ValueError:
             entity_type = EntityType.EMPRESA
 
+        # Accounting scope (personal vs business)
+        console.print("Âmbito contabilístico: [cyan]pessoal[/cyan] ou [cyan]empresa[/cyan]")
+        scope_str = Prompt.ask("Âmbito", choices=["pessoal", "empresa"], default="empresa")
+        scope = AccountingScope(scope_str)
+
         # Create entity
         entity = self.registry.create_entity(
             name=name,
             folder_name=folder_name,
             entity_type=entity_type,
+            scope=scope,
             nifs=pdf_info.get("nifs", []),
             sender_emails=[invoice.sender],
         )
@@ -674,8 +681,8 @@ class InvoiceProcessor:
             except (ValueError, IndexError):
                 pass
 
-        # Create destination folder: faturas/year/entity_folder/
-        dest_folder = settings.data_dir / "faturas" / str(year) / entity.folder_name
+        # Create destination folder: faturas/year/scope/entity_folder/
+        dest_folder = settings.data_dir / "faturas" / str(year) / entity.scope.value / entity.folder_name
         dest_folder.mkdir(parents=True, exist_ok=True)
 
         # Build filename with date prefix

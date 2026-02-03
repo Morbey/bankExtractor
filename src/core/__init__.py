@@ -13,6 +13,7 @@ from .classification_rules import (
 from .config import settings
 from .credentials import CredentialManager
 from .document_registry import (
+    AccountingScope,
     DocumentRecord,
     DocumentRegistry,
     DocumentStatus,
@@ -40,6 +41,7 @@ __all__ = [
     "DocumentStatus",
     "Entity",
     "EntityType",
+    "AccountingScope",
     "get_document_registry",
     "ClassificationRulesEngine",
     "ClassificationRule",
