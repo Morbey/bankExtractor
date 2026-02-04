@@ -157,46 +157,64 @@ def faturas(
 
     for prov_id in providers_to_process:
         display_name = f"{prov_id.upper()} ({conta})" if conta else prov_id.upper()
-        console.print(f"\n[bold cyan]A descarregar de {display_name}...[/bold cyan]")
+        console.print(f"\n[bold cyan]━━━ {display_name} ━━━[/bold cyan]")
 
         # Create progress display for this provider
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=20),
-            TaskProgressColumn(),
+            BarColumn(bar_width=30),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("•"),
+            TextColumn("{task.completed}/{task.total}", style="cyan"),
             console=console,
-            transient=True,
+            transient=False,
+            refresh_per_second=10,
         ) as progress:
-            current_task = progress.add_task("[cyan]A ligar...", total=None)
+            # Track different stages
+            search_task = None
+            download_task = None
 
             def update_progress(stage: str, current: int, total: int, message: str):
                 """Callback to update progress display."""
+                nonlocal search_task, download_task
+
                 if stage == "connect":
                     if current >= 1:
-                        progress.update(
-                            current_task, description="[green]✓ Ligado[/green]", total=None
-                        )
-                    else:
-                        progress.update(current_task, description=f"[cyan]{message}", total=None)
+                        console.print("  [green]✓[/green] Ligado ao servidor")
+                    # Connection stage - no progress bar needed
                 elif stage == "search":
+                    if search_task is None:
+                        search_task = progress.add_task(
+                            "[yellow]A pesquisar remetentes...", total=total or 1
+                        )
                     progress.update(
-                        current_task,
-                        description=f"[yellow]{message}",
-                        total=total,
+                        search_task,
+                        description=f"[yellow]A pesquisar: {message.split(':')[-1].strip()[:25]}",
                         completed=current,
+                        total=total or 1,
                     )
                 elif stage == "fetch":
-                    progress.update(
-                        current_task, description=f"[blue]{message}", total=total, completed=current
-                    )
+                    # Hide search task when fetch starts
+                    if search_task is not None:
+                        progress.update(search_task, visible=False)
+                    if download_task is None and total > 0:
+                        download_task = progress.add_task("[blue]A obter emails...", total=total)
+                    if download_task is not None:
+                        progress.update(
+                            download_task,
+                            description=f"[blue]Email {current}/{total}",
+                            completed=current,
+                            total=total,
+                        )
                 elif stage == "download":
-                    progress.update(
-                        current_task,
-                        description=f"[green]{message}",
-                        total=total,
-                        completed=current,
-                    )
+                    if download_task is not None:
+                        progress.update(
+                            download_task,
+                            description=f"[green]A processar {current}/{total}",
+                            completed=current,
+                            total=total or current,
+                        )
 
             try:
                 # Use scrape_to_inbox for automatic deduplication
@@ -212,17 +230,21 @@ def faturas(
                 total_attachments_added += aa
                 total_attachments_skipped += as_
 
-                if aa > 0:
-                    console.print(f"  [green]✓ {aa} faturas novas[/green]")
-                    if as_ > 0:
-                        console.print(f"  [dim]{as_} duplicadas ignoradas[/dim]")
-                elif es > 0:
-                    console.print(f"  [dim]Todos os {es} emails já existiam na BD[/dim]")
-                else:
-                    console.print("  [dim]Nenhuma fatura encontrada[/dim]")
-
             except Exception as e:
-                console.print(f"[red]Erro: {e}[/red]")
+                console.print(f"  [red]✗ Erro: {e}[/red]")
+                ea, es, aa, as_ = 0, 0, 0, 0
+
+        # Summary after progress bar
+        if aa > 0:
+            console.print(f"  [green]✓ {aa} faturas novas[/green]", end="")
+            if as_ > 0:
+                console.print(f" [dim]({as_} duplicadas)[/dim]")
+            else:
+                console.print()
+        elif es > 0:
+            console.print(f"  [dim]✓ {ea + es} emails verificados, todos já existiam[/dim]")
+        else:
+            console.print("  [dim]Nenhuma fatura encontrada[/dim]")
 
     if total_attachments_added == 0:
         if total_attachments_skipped > 0 or total_emails_skipped > 0:
